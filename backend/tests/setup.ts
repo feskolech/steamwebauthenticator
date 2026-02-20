@@ -1,0 +1,15 @@
+process.env.NODE_ENV = 'test';
+process.env.PORT = '3001';
+process.env.APP_URL = 'http://localhost:3000';
+process.env.API_URL = 'http://localhost:3001';
+process.env.DB_HOST = 'localhost';
+process.env.DB_PORT = '3306';
+process.env.DB_NAME = 'steamguard';
+process.env.DB_USER = 'steamguard';
+process.env.DB_PASSWORD = 'steamguard';
+process.env.JWT_SECRET = 'test_secret_1234567890';
+process.env.COOKIE_SECRET = 'test_cookie_1234567890';
+process.env.ENCRYPTION_KEY = 'test_encryption_1234567890';
+process.env.ADMIN_EMAIL = 'admin@admin.com';
+process.env.ADMIN_PASSWORD = 'admin123';
+process.env.STEAM_POLL_INTERVAL_SEC = '20';

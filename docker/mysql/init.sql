@@ -1,0 +1,145 @@
+CREATE TABLE IF NOT EXISTS global_settings (
+  id TINYINT PRIMARY KEY,
+  registration_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+INSERT INTO global_settings (id, registration_enabled)
+VALUES (1, TRUE)
+ON DUPLICATE KEY UPDATE registration_enabled = registration_enabled;
+
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(190) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  language VARCHAR(5) NOT NULL DEFAULT 'en',
+  theme ENUM('light', 'dark') NOT NULL DEFAULT 'light',
+  steam_userid VARCHAR(64) NULL,
+  telegram_user_id BIGINT NULL UNIQUE,
+  telegram_username VARCHAR(255) NULL,
+  twofa_method ENUM('none', 'telegram', 'webauthn') NOT NULL DEFAULT 'none',
+  api_key_hash VARCHAR(128) NULL,
+  api_key_last4 VARCHAR(4) NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_accounts (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  alias VARCHAR(255) NOT NULL,
+  account_name VARCHAR(255) NOT NULL,
+  steamid VARCHAR(64) NULL,
+  encrypted_ma LONGTEXT NOT NULL,
+  encrypted_revocation_code LONGTEXT NULL,
+  source ENUM('mafile', 'credentials') NOT NULL DEFAULT 'mafile',
+  auto_confirm BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_confirm_delay_sec INT NOT NULL DEFAULT 0,
+  last_code VARCHAR(16) NULL,
+  last_active DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_user_accounts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS account_sessions (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  account_id BIGINT UNSIGNED NOT NULL,
+  session_json LONGTEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT uq_account_sessions_account UNIQUE (account_id),
+  CONSTRAINT fk_account_sessions_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  account_id BIGINT UNSIGNED NULL,
+  type ENUM('trade', 'login', 'code', 'system') NOT NULL,
+  details JSON NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_logs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_logs_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS confirmations_cache (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  account_id BIGINT UNSIGNED NOT NULL,
+  confirmation_id VARCHAR(128) NOT NULL,
+  nonce VARCHAR(128) NULL,
+  kind VARCHAR(64) NOT NULL,
+  headline VARCHAR(255) NOT NULL,
+  summary TEXT NULL,
+  status ENUM('pending', 'confirmed', 'rejected') NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_confirmations (account_id, confirmation_id),
+  CONSTRAINT fk_confirmations_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  channel ENUM('web', 'telegram', 'email') NOT NULL,
+  type VARCHAR(64) NOT NULL,
+  payload JSON NOT NULL,
+  read_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS telegram_link_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  code VARCHAR(32) NOT NULL UNIQUE,
+  purpose ENUM('link', 'login') NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_telegram_link_codes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS telegram_oauth_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  telegram_user_id BIGINT NULL,
+  telegram_username VARCHAR(255) NULL,
+  approved BOOLEAN NOT NULL DEFAULT FALSE,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pending_telegram_2fa (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  code VARCHAR(16) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_pending_telegram_2fa_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_passkeys (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  credential_id VARCHAR(512) NOT NULL UNIQUE,
+  public_key TEXT NOT NULL,
+  counter BIGINT NOT NULL DEFAULT 0,
+  transports VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_user_passkeys_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  challenge VARCHAR(255) NOT NULL,
+  flow ENUM('register', 'login') NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_webauthn_challenges_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
