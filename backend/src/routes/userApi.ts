@@ -37,7 +37,7 @@ async function getSession(accountId: number): Promise<any | null> {
 const userApiRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/user/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
-      `SELECT id, alias, account_name, steamid, auto_confirm, auto_confirm_delay_sec, last_code, last_active
+      `SELECT id, alias, account_name, steamid, auto_confirm, auto_confirm_trades, auto_confirm_logins, auto_confirm_delay_sec, last_code, last_active
        FROM user_accounts
        WHERE user_id = ?
        ORDER BY created_at DESC`,
@@ -50,7 +50,9 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
         alias: item.alias,
         accountName: item.account_name,
         steamid: item.steamid,
-        autoConfirm: Boolean(item.auto_confirm),
+        autoConfirm: Boolean(item.auto_confirm ?? item.auto_confirm_trades),
+        autoConfirmTrades: Boolean(item.auto_confirm_trades ?? item.auto_confirm),
+        autoConfirmLogins: Boolean(item.auto_confirm_logins),
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
         lastCode: item.last_code,
         lastActive: item.last_active

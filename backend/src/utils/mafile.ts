@@ -1,16 +1,28 @@
 import { z } from 'zod';
 
+const optionalString = z.preprocess((value) => {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : undefined;
+}, z.string().optional());
+
 const maSchema = z.object({
   account_name: z.string().min(1),
   shared_secret: z.string().min(1),
   identity_secret: z.string().min(1),
-  steamid: z.string().optional(),
+  steamid: optionalString,
+  revocation_code: optionalString,
+  Revocation_code: optionalString,
   Session: z
     .object({
-      SteamID: z.string().optional(),
-      SteamLoginSecure: z.string().optional(),
-      SessionID: z.string().optional(),
-      OAuthToken: z.string().optional()
+      SteamID: optionalString,
+      SteamLoginSecure: optionalString,
+      SessionID: optionalString,
+      OAuthToken: optionalString,
+      AccessToken: optionalString
     })
     .passthrough()
     .optional()
@@ -25,9 +37,14 @@ export type SteamSessionState = {
   oauthToken?: string;
 };
 
-export function parseMaFile(raw: Buffer | string): MaFile {
-  const input = Buffer.isBuffer(raw) ? raw.toString('utf8') : raw;
-  const parsed = JSON.parse(input);
+export function parseMaFile(raw: Buffer | string | Record<string, unknown>): MaFile {
+  const parsed =
+    typeof raw === 'string'
+      ? JSON.parse(raw)
+      : Buffer.isBuffer(raw)
+        ? JSON.parse(raw.toString('utf8'))
+        : raw;
+
   return maSchema.parse(parsed);
 }
 
@@ -36,7 +53,7 @@ export function extractSessionFromMa(ma: MaFile): SteamSessionState | null {
   const steamid = ma.steamid ?? session?.SteamID;
   const steamLoginSecure = session?.SteamLoginSecure;
   const sessionid = session?.SessionID;
-  const oauthToken = session?.OAuthToken;
+  const oauthToken = session?.OAuthToken ?? session?.AccessToken;
 
   if (!steamid && !steamLoginSecure && !sessionid && !oauthToken) {
     return null;

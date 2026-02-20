@@ -24,6 +24,11 @@ type PendingEnrollment = {
 export function AccountsPage() {
   const { t } = useTranslation();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [liveCodes, setLiveCodes] = useState<Record<number, string>>({});
+  const [secondsLeft, setSecondsLeft] = useState(() => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    return 30 - (nowSec % 30) || 30;
+  });
 
   const [maAlias, setMaAlias] = useState('');
   const [maFile, setMaFile] = useState<File | null>(null);
@@ -33,12 +38,16 @@ export function AccountsPage() {
   const [steamAlias, setSteamAlias] = useState('');
   const [steamAccountName, setSteamAccountName] = useState('');
   const [steamPassword, setSteamPassword] = useState('');
-  const [steamGuardCode, setSteamGuardCode] = useState('');
   const [activationCode, setActivationCode] = useState('');
   const [pendingEnroll, setPendingEnroll] = useState<PendingEnrollment | null>(null);
   const [enrollBusy, setEnrollBusy] = useState(false);
   const [enrollError, setEnrollError] = useState<string | null>(null);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
+  const [guardModalOpen, setGuardModalOpen] = useState(false);
+  const [guardModalType, setGuardModalType] = useState<'email' | 'totp'>('email');
+  const [guardModalDomain, setGuardModalDomain] = useState<string | null>(null);
+  const [guardCodeInput, setGuardCodeInput] = useState('');
+  const [guardModalError, setGuardModalError] = useState<string | null>(null);
 
   const [cachedCodes, setCachedCodes] = useState<CachedCode>(() => {
     const raw = localStorage.getItem(OFFLINE_CODES_KEY);
@@ -61,9 +70,96 @@ export function AccountsPage() {
     void load();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const updateCountdown = () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const next = 30 - (nowSec % 30) || 30;
+      if (active) {
+        setSecondsLeft(next);
+      }
+    };
+
+    const fetchLiveCodes = async () => {
+      try {
+        const response = await accountApi.liveCodes();
+        if (!active) {
+          return;
+        }
+        const next: Record<number, string> = {};
+        response.items.forEach((item) => {
+          next[item.accountId] = item.code;
+        });
+        setLiveCodes(next);
+      } catch {
+        // ignore temporary errors
+      }
+    };
+
+    const scheduleRefresh = () => {
+      const nowMs = Date.now();
+      const secPart = Math.floor(nowMs / 1000);
+      const secToNext = 30 - (secPart % 30) || 30;
+      const delayMs = secToNext * 1000 + 150;
+      refreshTimeout = setTimeout(async () => {
+        await fetchLiveCodes();
+        scheduleRefresh();
+      }, delayMs);
+    };
+
+    updateCountdown();
+    void fetchLiveCodes();
+    scheduleRefresh();
+    const timer = setInterval(updateCountdown, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+      if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+      }
+    };
+  }, []);
+
   const saveCache = (next: CachedCode) => {
     setCachedCodes(next);
     localStorage.setItem(OFFLINE_CODES_KEY, JSON.stringify(next));
+  };
+
+  const formatEnrollError = (data: any, fallback: string) => {
+    if (!data) {
+      return fallback;
+    }
+
+    const parts: string[] = [];
+    if (data.message) {
+      parts.push(String(data.message));
+    }
+
+    if (data.code) {
+      parts.push(`code=${String(data.code)}`);
+    }
+
+    if (data.status !== undefined && data.status !== null) {
+      parts.push(`status=${String(data.status)}`);
+    }
+
+    if (data.details && typeof data.details === 'object') {
+      const details = data.details as Record<string, unknown>;
+      if (details.phoneVerified !== undefined && details.phoneVerified !== null) {
+        parts.push(`phoneVerified=${String(details.phoneVerified)}`);
+      }
+      if (details.isSteamGuardEnabled !== undefined && details.isSteamGuardEnabled !== null) {
+        parts.push(`isSteamGuardEnabled=${String(details.isSteamGuardEnabled)}`);
+      }
+      if (details.timestampTwoFactorEnabled) {
+        parts.push(`twoFactorEnabledAt=${String(details.timestampTwoFactorEnabled)}`);
+      }
+    }
+
+    return parts.length > 0 ? parts.join(' | ') : fallback;
   };
 
   const onImportMa = async () => {
@@ -95,15 +191,58 @@ export function AccountsPage() {
     try {
       const response = await accountApi.enrollStart({
         accountName: steamAccountName,
-        password: steamPassword,
-        guardCode: steamGuardCode || undefined
+        password: steamPassword
       });
       setPendingEnroll(response);
       if (!steamAlias) {
         setSteamAlias(response.accountName);
       }
     } catch (err: any) {
-      setEnrollError(err?.response?.data?.message || err.message || t('accounts.enrollStartFailed'));
+      const data = err?.response?.data;
+      if (data?.code === 'STEAM_GUARD_REQUIRED') {
+        setGuardModalType(data.guardType === 'totp' ? 'totp' : 'email');
+        setGuardModalDomain(typeof data.guardDomain === 'string' ? data.guardDomain : null);
+        setGuardCodeInput('');
+        setGuardModalError(null);
+        setGuardModalOpen(true);
+      } else {
+        setEnrollError(
+          formatEnrollError(
+            data,
+            err?.message || t('accounts.enrollStartFailed')
+          )
+        );
+      }
+    } finally {
+      setEnrollBusy(false);
+    }
+  };
+
+  const onSubmitGuardCode = async () => {
+    setEnrollBusy(true);
+    setGuardModalError(null);
+    setEnrollError(null);
+
+    try {
+      const response = await accountApi.enrollStart({
+        accountName: steamAccountName,
+        password: steamPassword,
+        guardCode: guardCodeInput
+      });
+      setPendingEnroll(response);
+      if (!steamAlias) {
+        setSteamAlias(response.accountName);
+      }
+      setGuardModalOpen(false);
+      setGuardCodeInput('');
+    } catch (err: any) {
+      const data = err?.response?.data;
+      setGuardModalError(
+        formatEnrollError(
+          data,
+          err?.message || t('accounts.enrollStartFailed')
+        )
+      );
     } finally {
       setEnrollBusy(false);
     }
@@ -127,7 +266,6 @@ export function AccountsPage() {
       setPendingEnroll(null);
       setActivationCode('');
       setSteamPassword('');
-      setSteamGuardCode('');
       await load();
     } catch (err: any) {
       setEnrollError(err?.response?.data?.message || err.message || t('accounts.enrollFinishFailed'));
@@ -200,11 +338,6 @@ export function AccountsPage() {
                 value={steamPassword}
                 onChange={(event) => setSteamPassword(event.target.value)}
               />
-              <Input
-                placeholder={t('accounts.steamGuardCode')}
-                value={steamGuardCode}
-                onChange={(event) => setSteamGuardCode(event.target.value)}
-              />
             </div>
 
             <Button onClick={() => void onStartEnroll()} disabled={enrollBusy} className="gap-2">
@@ -255,10 +388,12 @@ export function AccountsPage() {
 
       <Card>
         <div className="overflow-x-auto">
+          <div className="mb-2 text-xs text-base-500">{t('accounts.liveCodeTimer', { seconds: secondsLeft })}</div>
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="text-xs uppercase text-base-500">
                 <th className="px-2 py-2">{t('accounts.colAlias')}</th>
+                <th className="px-2 py-2">{t('accounts.colUsername')}</th>
                 <th className="px-2 py-2">{t('accounts.colSteamId')}</th>
                 <th className="px-2 py-2">{t('accounts.colLastCode')}</th>
                 <th className="px-2 py-2">{t('accounts.colActions')}</th>
@@ -268,11 +403,20 @@ export function AccountsPage() {
               {accounts.map((account) => (
                 <tr key={account.id} className="border-t border-base-200/80 dark:border-base-700/70">
                   <td className="px-2 py-3 font-medium">{account.alias}</td>
+                  <td className="px-2 py-3 text-xs">{account.accountName}</td>
                   <td className="px-2 py-3 text-xs">{account.steamid ?? '-'}</td>
                   <td className="px-2 py-3">
-                    <Badge variant={navigator.onLine ? 'default' : 'warning'}>
-                      {account.lastCode ?? cachedCodes[String(account.id)] ?? t('accounts.noCode')}
-                    </Badge>
+                    <div className="space-y-1">
+                      <Badge variant={navigator.onLine ? 'default' : 'warning'}>
+                        {liveCodes[account.id] ??
+                          account.lastCode ??
+                          cachedCodes[String(account.id)] ??
+                          t('accounts.noCode')}
+                      </Badge>
+                      <div className="text-xs text-base-500">
+                        {t('accounts.expiresIn', { seconds: secondsLeft })}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-2 py-3">
                     <div className="flex flex-wrap gap-2">
@@ -313,7 +457,7 @@ export function AccountsPage() {
               ))}
               {accounts.length === 0 && (
                 <tr>
-                  <td className="px-2 py-4 text-sm text-base-500" colSpan={4}>
+                  <td className="px-2 py-4 text-sm text-base-500" colSpan={5}>
                     {t('common.empty')}
                   </td>
                 </tr>
@@ -322,6 +466,45 @@ export function AccountsPage() {
           </table>
         </div>
       </Card>
+
+      {guardModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-base-200 bg-white p-5 shadow-xl dark:border-base-700 dark:bg-base-900">
+            <h3 className="text-lg font-semibold">{t('accounts.guardModalTitle')}</h3>
+            <p className="mt-2 text-sm text-base-500">
+              {guardModalType === 'email'
+                ? t('accounts.guardModalEmailHint', { domain: guardModalDomain ?? 'email' })
+                : t('accounts.guardModalTotpHint')}
+            </p>
+
+            <div className="mt-3">
+              <Input
+                placeholder={t('accounts.guardCodePlaceholder')}
+                value={guardCodeInput}
+                onChange={(event) => setGuardCodeInput(event.target.value)}
+              />
+            </div>
+
+            {guardModalError && <div className="mt-2 text-sm text-danger">{guardModalError}</div>}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setGuardModalOpen(false);
+                  setGuardCodeInput('');
+                  setGuardModalError(null);
+                }}
+              >
+                {t('accounts.guardModalCancel')}
+              </Button>
+              <Button onClick={() => void onSubmitGuardCode()} disabled={enrollBusy || !guardCodeInput.trim()}>
+                {enrollBusy ? t('auth.pleaseWait') : t('accounts.guardModalSubmit')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,7 +19,9 @@ export type Account = {
   accountName: string;
   steamid: string | null;
   source?: 'mafile' | 'credentials';
-  autoConfirm: boolean;
+  autoConfirm?: boolean;
+  autoConfirmTrades: boolean;
+  autoConfirmLogins: boolean;
   autoConfirmDelaySec: number;
   lastCode: string | null;
   lastActive: string | null;

@@ -133,6 +133,27 @@ function mapLoginEvent(row: LogRow, details: Record<string, unknown>): UserLogIt
     };
   }
 
+  if (action === 'auto_confirm') {
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      accountAlias: row.alias,
+      type: row.type,
+      category: 'steam',
+      eventKey: 'steam.login.autoConfirmed',
+      context: {
+        confirmationId
+      },
+      createdAt: row.created_at,
+      details: {
+        action: 'auto_confirm',
+        confirmationId,
+        headline: details.headline ?? null,
+        summary: details.summary ?? null
+      }
+    };
+  }
+
   return {
     id: row.id,
     accountId: row.account_id,
@@ -337,4 +358,3 @@ const logsRoutes: FastifyPluginAsync = async (app) => {
 };
 
 export default logsRoutes;
-

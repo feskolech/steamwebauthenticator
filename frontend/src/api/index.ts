@@ -34,6 +34,12 @@ export const authApi = {
 
 export const accountApi = {
   list: () => apiClient.get<{ items: Account[] }>('/api/accounts'),
+  liveCodes: () =>
+    apiClient.get<{
+      generatedAt: string;
+      validForSec: number;
+      items: Array<{ accountId: number; code: string }>;
+    }>('/api/accounts/live-codes'),
   get: (accountId: number) => apiClient.get<Account>(`/api/accounts/${accountId}`),
   import: async (file: File, alias?: string) => {
     const form = new FormData();
@@ -51,7 +57,12 @@ export const accountApi = {
     });
     return response.data;
   },
-  update: (accountId: number, data: Partial<Pick<Account, 'alias' | 'autoConfirm' | 'autoConfirmDelaySec'>>) =>
+  update: (
+    accountId: number,
+    data: Partial<
+      Pick<Account, 'alias' | 'autoConfirm' | 'autoConfirmTrades' | 'autoConfirmLogins' | 'autoConfirmDelaySec'>
+    >
+  ) =>
     apiClient.patch<{ success: boolean }>(`/api/accounts/${accountId}`, data),
   delete: (accountId: number) => apiClient.delete<{ success: boolean }>(`/api/accounts/${accountId}`),
   code: (accountId: number) => apiClient.get<{ code: string; generatedAt: string }>(`/api/accounts/${accountId}/code`),

@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS user_accounts (
   encrypted_revocation_code LONGTEXT NULL,
   source ENUM('mafile', 'credentials') NOT NULL DEFAULT 'mafile',
   auto_confirm BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_confirm_trades BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_confirm_logins BOOLEAN NOT NULL DEFAULT FALSE,
   auto_confirm_delay_sec INT NOT NULL DEFAULT 0,
   last_code VARCHAR(16) NULL,
   last_active DATETIME NULL,

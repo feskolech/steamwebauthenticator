@@ -19,11 +19,11 @@ async function runCycle(app: FastifyInstance): Promise<void> {
 
   try {
     const accounts = await queryRows<any[]>(
-      `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm, a.auto_confirm_delay_sec,
+      `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm_trades, a.auto_confirm_logins, a.auto_confirm_delay_sec,
               u.password_hash, u.telegram_user_id
        FROM user_accounts a
        JOIN users u ON u.id = a.user_id
-       WHERE a.auto_confirm = TRUE OR u.telegram_user_id IS NOT NULL`
+       WHERE a.auto_confirm_trades = TRUE OR a.auto_confirm_logins = TRUE OR u.telegram_user_id IS NOT NULL`
     );
 
     for (const account of accounts) {
@@ -101,7 +101,11 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             }
           }
 
-          if (account.auto_confirm && kind === 'trade') {
+          const canAutoConfirm =
+            (kind === 'trade' && Boolean(account.auto_confirm_trades)) ||
+            (kind === 'login' && Boolean(account.auto_confirm_logins));
+
+          if (canAutoConfirm && (kind === 'trade' || kind === 'login')) {
             const cacheRows = await queryRows<{ id: number; created_at: Date; status: string; nonce: string }[]>(
               `SELECT id, created_at, status, nonce
                FROM confirmations_cache
@@ -142,11 +146,11 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             );
 
             await execute(
-              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'trade', JSON_OBJECT('confirmationId', ?, 'action', 'auto_confirm'))",
-              [account.user_id, account.id, confirmation.id]
+              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, ?, JSON_OBJECT('confirmationId', ?, 'action', 'auto_confirm'))",
+              [account.user_id, account.id, kind, confirmation.id]
             );
 
-            wsHub.sendToUser(Number(account.user_id), 'trade:auto_confirmed', {
+            wsHub.sendToUser(Number(account.user_id), `${kind}:auto_confirmed`, {
               accountId: account.id,
               confirmationId: confirmation.id
             });

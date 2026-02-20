@@ -7,8 +7,19 @@ import './styles/index.css';
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
 
+if ('serviceWorker' in navigator) {
+  void navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((registration) => {
+      void registration.update();
+    });
+  });
+}
+
 registerSW({
-  immediate: true
+  immediate: true,
+  onNeedRefresh() {
+    window.location.reload();
+  }
 });
 
 createRoot(document.getElementById('root')!).render(

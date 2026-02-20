@@ -31,6 +31,30 @@ async function ensureSchemaUpgrades(): Promise<void> {
       "ALTER TABLE user_accounts ADD COLUMN source ENUM('mafile', 'credentials') NOT NULL DEFAULT 'mafile' AFTER encrypted_revocation_code"
     );
   }
+
+  const hasLegacyAutoConfirm = await hasColumn('user_accounts', 'auto_confirm');
+  const hasAutoConfirmTrades = await hasColumn('user_accounts', 'auto_confirm_trades');
+  const hasAutoConfirmLogins = await hasColumn('user_accounts', 'auto_confirm_logins');
+
+  if (!hasAutoConfirmTrades) {
+    await execute(
+      'ALTER TABLE user_accounts ADD COLUMN auto_confirm_trades BOOLEAN NOT NULL DEFAULT FALSE AFTER auto_confirm'
+    );
+  }
+
+  if (!hasAutoConfirmLogins) {
+    await execute(
+      'ALTER TABLE user_accounts ADD COLUMN auto_confirm_logins BOOLEAN NOT NULL DEFAULT FALSE AFTER auto_confirm_trades'
+    );
+  }
+
+  if (hasLegacyAutoConfirm && !hasAutoConfirmTrades) {
+    await execute(
+      `UPDATE user_accounts
+       SET auto_confirm_trades = auto_confirm
+       WHERE auto_confirm = TRUE`
+    );
+  }
 }
 
 export async function ensureBootstrapData(): Promise<void> {

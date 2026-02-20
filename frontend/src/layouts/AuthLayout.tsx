@@ -9,10 +9,6 @@ export function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="glass-card relative grid w-full max-w-5xl grid-cols-1 overflow-hidden p-0 md:grid-cols-[1.1fr_1fr]">
-        <div className="absolute right-8 top-8 z-20 hidden gap-2 md:flex">
-          <LanguageSwitcher />
-          <ThemeToggle />
-        </div>
         <div className="relative hidden p-10 md:block">
           <div className="absolute inset-0 bg-gradient-to-br from-accent-500/20 to-transparent" />
           <div className="relative z-10 flex h-full flex-col justify-between">
@@ -26,7 +22,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
         <div className="p-6 md:p-10">
-          <div className="mb-4 flex gap-2 md:hidden">
+          <div className="mb-4 flex justify-end gap-2">
             <LanguageSwitcher />
             <ThemeToggle />
           </div>

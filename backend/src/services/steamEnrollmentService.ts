@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
 import SteamTotp from 'steam-totp';
-import SteamUser from 'steam-user';
 import type { MaFile, SteamSessionState } from '../utils/mafile';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const SteamCommunity = require('steamcommunity') as new (...args: any[]) => any;
 
 const ENROLLMENT_TTL_MS = 15 * 60 * 1000;
 const LOGIN_TIMEOUT_MS = 40_000;
-const WEB_SESSION_TIMEOUT_MS = 12_000;
 
 type PendingSteamEnrollment = {
   id: string;
@@ -23,20 +24,58 @@ type PendingSteamEnrollment = {
 };
 
 type GuardCodeKind = 'email' | 'totp';
+type SteamCommunityLoginError = Error & { emaildomain?: string };
+type AddAuthenticatorResponse = {
+  status?: number;
+  shared_secret?: string;
+  identity_secret?: string;
+  revocation_code?: string;
+  serial_number?: string;
+  server_time?: number;
+  [key: string]: unknown;
+};
+
+export class SteamEnrollmentError extends Error {
+  code: string;
+  guardType?: GuardCodeKind;
+  guardDomain?: string | null;
+  status?: number;
+  details?: Record<string, unknown>;
+
+  constructor(params: {
+    code: string;
+    message: string;
+    guardType?: GuardCodeKind;
+    guardDomain?: string | null;
+    status?: number;
+    details?: Record<string, unknown>;
+  }) {
+    super(params.message);
+    this.code = params.code;
+    this.guardType = params.guardType;
+    this.guardDomain = params.guardDomain;
+    this.status = params.status;
+    this.details = params.details;
+  }
+}
 
 const pendingById = new Map<string, PendingSteamEnrollment>();
 
 function closeClient(client: any): void {
-  try {
-    client.logOff();
-  } catch {
-    // ignore
+  if (typeof client?.logOff === 'function') {
+    try {
+      client.logOff();
+    } catch {
+      // ignore
+    }
   }
 
-  try {
-    client.removeAllListeners();
-  } catch {
-    // ignore
+  if (typeof client?.removeAllListeners === 'function') {
+    try {
+      client.removeAllListeners();
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -52,7 +91,7 @@ function parseCookieValue(cookies: string[], name: string): string | undefined {
   return undefined;
 }
 
-function buildSessionFromWebSession(
+function buildSessionFromCookies(
   steamid: string,
   sessionid: string,
   cookies: string[]
@@ -68,41 +107,6 @@ function buildSessionFromWebSession(
     steamLoginSecure,
     sessionid
   };
-}
-
-async function waitForWebSession(
-  client: any,
-  steamid: string,
-  timeoutMs: number
-): Promise<SteamSessionState | null> {
-  return new Promise((resolve) => {
-    let resolved = false;
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        client.removeListener('webSession', onWebSession);
-        resolve(null);
-      }
-    }, timeoutMs);
-
-    const onWebSession = (sessionid: string, cookies: string[]) => {
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      clearTimeout(timeout);
-      resolve(buildSessionFromWebSession(steamid, sessionid, cookies));
-    };
-
-    client.once('webSession', onWebSession);
-
-    try {
-      client.webLogOn();
-    } catch {
-      // ignore
-    }
-  });
 }
 
 function cleanupExpiredEnrollments(): void {
@@ -123,98 +127,186 @@ async function loginToSteam(params: {
   accountName: string;
   password: string;
   guardCode?: string;
-}): Promise<any> {
-  const client = new SteamUser({
-    autoRelogin: false,
-    dataDirectory: null
-  });
-
+}): Promise<{ client: any; steamid: string; session: SteamSessionState | null }> {
+  const client = new SteamCommunity();
   const guardCode = params.guardCode?.trim();
 
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    const timeout = setTimeout(() => {
-      fail(new Error('Steam login timed out'));
-    }, LOGIN_TIMEOUT_MS);
+  return await new Promise<{ client: any; steamid: string; session: SteamSessionState | null }>(
+    (resolve, reject) => {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        fail(new Error('Steam login timed out'));
+      }, LOGIN_TIMEOUT_MS);
 
-    const cleanup = () => {
-      clearTimeout(timeout);
-      client.removeListener('loggedOn', onLoggedOn);
-      client.removeListener('steamGuard', onSteamGuard);
-      client.removeListener('error', onError);
-      client.removeListener('disconnected', onDisconnected);
-    };
+      const fail = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        closeClient(client);
+        reject(error);
+      };
 
-    const fail = (error: Error) => {
-      if (settled) {
+      const done = (result: { client: any; steamid: string; session: SteamSessionState | null }) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve(result);
+      };
+
+      const details: Record<string, unknown> = {
+        accountName: params.accountName,
+        password: params.password,
+        disableMobile: false
+      };
+
+      if (guardCode) {
+        details.authCode = guardCode;
+        details.twoFactorCode = guardCode;
+      }
+
+      client.login(
+        details,
+        (error: SteamCommunityLoginError | null, sessionid?: string, cookies?: string[]) => {
+          if (error) {
+            if (error.message === 'SteamGuard') {
+              fail(
+                new SteamEnrollmentError({
+                  code: 'STEAM_GUARD_REQUIRED',
+                  message: 'Steam Guard email code required',
+                  guardType: 'email',
+                  guardDomain: error.emaildomain ?? null
+                })
+              );
+              return;
+            }
+
+            if (error.message === 'SteamGuardMobile') {
+              fail(
+                new SteamEnrollmentError({
+                  code: 'STEAM_GUARD_REQUIRED',
+                  message: 'Steam Guard mobile code required',
+                  guardType: 'totp'
+                })
+              );
+              return;
+            }
+
+            const message = error.message || 'Steam login failed';
+            if (
+              guardCode &&
+              (message.toLowerCase().includes('guard') || message.toLowerCase().includes('auth code'))
+            ) {
+              fail(
+                new SteamEnrollmentError({
+                  code: 'STEAM_GUARD_INVALID',
+                  message: 'Steam Guard code is invalid or expired'
+                })
+              );
+              return;
+            }
+
+            fail(new Error(message));
+            return;
+          }
+
+          if (!Array.isArray(cookies) || !sessionid) {
+            fail(new Error('Steam login succeeded, but session cookies are unavailable'));
+            return;
+          }
+
+          const steamid = client?.steamID?.getSteamID64?.();
+          if (!steamid) {
+            fail(new Error('Steam login succeeded, but steamid is unavailable'));
+            return;
+          }
+
+          done({
+            client,
+            steamid,
+            session: buildSessionFromCookies(steamid, sessionid, cookies)
+          });
+        }
+      );
+    }
+  );
+}
+
+async function addAuthenticator(client: any, steamid: string): Promise<AddAuthenticatorResponse> {
+  return await new Promise<AddAuthenticatorResponse>((resolve, reject) => {
+    if (!client?.mobileAccessToken) {
+      reject(new Error('No mobile access token available. Steam mobile login token is required for enrollment.'));
+      return;
+    }
+
+    client.httpRequestPost(
+      {
+        uri: `https://api.steampowered.com/ITwoFactorService/AddAuthenticator/v1/?access_token=${client.mobileAccessToken}`,
+        form: {
+          steamid,
+          authenticator_type: 1,
+          device_identifier: SteamTotp.getDeviceID(steamid),
+          sms_phone_id: '1',
+          version: 2
+        },
+        json: true
+      },
+      (error: Error | null, _response: unknown, body: { response?: AddAuthenticatorResponse }) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        if (!body?.response) {
+          reject(new Error('Malformed Steam response'));
+          return;
+        }
+
+        resolve(body.response);
+      },
+      'steamcommunity'
+    );
+  });
+}
+
+async function finalizeAuthenticator(client: any, sharedSecret: string, activationCode: string): Promise<void> {
+  return await new Promise<void>((resolve, reject) => {
+    client.finalizeTwoFactor(sharedSecret, activationCode, (error: Error | null) => {
+      if (error) {
+        reject(error);
         return;
       }
-      settled = true;
-      cleanup();
-      closeClient(client);
-      reject(error);
-    };
-
-    const pass = () => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanup();
       resolve();
-    };
-
-    const onLoggedOn = () => {
-      pass();
-    };
-
-    const onSteamGuard = (
-      domain: string | null,
-      callback: (code: string) => void,
-      lastCodeWrong: boolean
-    ) => {
-      if (!guardCode) {
-        const guardKind: GuardCodeKind = domain ? 'email' : 'totp';
-        fail(
-          new Error(
-            guardKind === 'email'
-              ? 'Steam Guard email code required'
-              : 'Steam Guard mobile code required'
-          )
-        );
-        return;
-      }
-
-      if (lastCodeWrong) {
-        fail(new Error('Steam Guard code is invalid or expired'));
-        return;
-      }
-
-      callback(guardCode);
-    };
-
-    const onError = (error: any) => {
-      fail(new Error(error?.message || 'Steam login failed'));
-    };
-
-    const onDisconnected = (_eresult: any, message: string) => {
-      if (!settled) {
-        fail(new Error(message ? `Steam disconnected: ${message}` : 'Steam disconnected'));
-      }
-    };
-
-    client.once('loggedOn', onLoggedOn);
-    client.on('steamGuard', onSteamGuard);
-    client.once('error', onError);
-    client.once('disconnected', onDisconnected);
-
-    client.logOn({
-      accountName: params.accountName,
-      password: params.password
     });
   });
+}
 
-  return client;
+function formatEnrollmentHint(status: number): string {
+  if (status === 2) {
+    return 'Steam-side restriction (cooldown after removal, already-active mobile auth, or phone/account hold).';
+  }
+
+  if (status === 89) {
+    return 'Steam rejected activation code.';
+  }
+
+  return 'Steam rejected enrollment request.';
+}
+
+function sanitizeEnrollDetails(response: AddAuthenticatorResponse): Record<string, unknown> {
+  const allowedKeys = ['status', 'server_time', 'status_detail', 'phone_number_hint', 'want_more'];
+  const details: Record<string, unknown> = {};
+
+  for (const key of allowedKeys) {
+    if (response[key] !== undefined) {
+      details[key] = response[key];
+    }
+  }
+
+  return details;
 }
 
 export async function startSteamEnrollment(params: {
@@ -237,30 +329,28 @@ export async function startSteamEnrollment(params: {
     }
   }
 
-  const client = await loginToSteam({
+  const { client, steamid, session } = await loginToSteam({
     accountName: params.accountName,
     password: params.password,
     guardCode: params.guardCode
   });
 
-  const steamid = client?.steamID?.getSteamID64?.();
-  if (!steamid) {
-    closeClient(client);
-    throw new Error('Steam login succeeded, but steamid is unavailable');
-  }
-
   try {
-    const enrollResponse = await client.enableTwoFactor();
+    const enrollResponse = await addAuthenticator(client, steamid);
     const status = Number(enrollResponse?.status ?? 1);
+
     if (status !== 1) {
-      throw new Error(`Steam rejected mobile authenticator setup (status ${status})`);
+      throw new SteamEnrollmentError({
+        code: 'STEAM_ENROLL_STATUS',
+        status,
+        message: `Steam rejected mobile authenticator setup (status ${status}). ${formatEnrollmentHint(status)}`,
+        details: sanitizeEnrollDetails(enrollResponse)
+      });
     }
 
     if (!enrollResponse?.shared_secret || !enrollResponse?.identity_secret) {
       throw new Error('Steam did not return shared_secret/identity_secret');
     }
-
-    const webSession = await waitForWebSession(client, steamid, WEB_SESSION_TIMEOUT_MS);
 
     const pendingId = randomUUID();
     const now = Date.now();
@@ -278,7 +368,7 @@ export async function startSteamEnrollment(params: {
       createdAtMs: now,
       expiresAtMs,
       client,
-      session: webSession
+      session
     });
 
     return {
@@ -323,15 +413,12 @@ export async function finishSteamEnrollment(params: {
   }
 
   try {
-    await pending.client.finalizeTwoFactor(Buffer.from(pending.sharedSecret, 'base64'), activationCode);
+    await finalizeAuthenticator(pending.client, pending.sharedSecret, activationCode);
   } catch (error: any) {
     throw new Error(error?.message || 'Failed to finalize mobile authenticator');
   }
 
-  const refreshedSession =
-    (await waitForWebSession(pending.client, pending.steamid, WEB_SESSION_TIMEOUT_MS)) ?? pending.session;
-
-  const session = refreshedSession ?? null;
+  const session = pending.session ?? null;
 
   const ma: MaFile = {
     account_name: pending.accountName,
@@ -362,4 +449,3 @@ export async function finishSteamEnrollment(params: {
     session
   };
 }
-

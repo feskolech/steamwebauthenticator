@@ -6,7 +6,8 @@ import { generateSteamCode } from '../services/steamService';
 import { guardWriteByIp } from '../middleware/rateLimiters';
 import {
   finishSteamEnrollment,
-  startSteamEnrollment
+  startSteamEnrollment,
+  SteamEnrollmentError
 } from '../services/steamEnrollmentService';
 
 type AccountRow = {
@@ -19,6 +20,8 @@ type AccountRow = {
   encrypted_revocation_code: string | null;
   source: 'mafile' | 'credentials';
   auto_confirm: number;
+  auto_confirm_trades: number;
+  auto_confirm_logins: number;
   auto_confirm_delay_sec: number;
   last_code: string | null;
   last_active: Date | null;
@@ -63,7 +66,7 @@ async function getAccountByOwner(userId: number, accountId: number): Promise<Acc
 const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
-      `SELECT id, alias, account_name, steamid, source, auto_confirm, auto_confirm_delay_sec,
+      `SELECT id, alias, account_name, steamid, source, auto_confirm, auto_confirm_trades, auto_confirm_logins, auto_confirm_delay_sec,
               last_code, last_active, created_at,
               IF(encrypted_revocation_code IS NULL, FALSE, TRUE) AS has_recovery_code
        FROM user_accounts
@@ -79,7 +82,9 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         accountName: item.account_name,
         steamid: item.steamid,
         source: item.source,
-        autoConfirm: Boolean(item.auto_confirm),
+        autoConfirm: Boolean(item.auto_confirm ?? item.auto_confirm_trades),
+        autoConfirmTrades: Boolean(item.auto_confirm_trades ?? item.auto_confirm),
+        autoConfirmLogins: Boolean(item.auto_confirm_logins),
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
         lastCode: item.last_code,
         lastActive: item.last_active,
@@ -87,6 +92,38 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         hasRecoveryCode: Boolean(item.has_recovery_code)
       }))
     };
+  });
+
+  app.get('/api/accounts/live-codes', { preHandler: app.authenticate }, async (request, reply) => {
+    try {
+      const user = await getUserSecret(request.user.id);
+      const accounts = await queryRows<{ id: number; encrypted_ma: string }[]>(
+        `SELECT id, encrypted_ma
+         FROM user_accounts
+         WHERE user_id = ?`,
+        [request.user.id]
+      );
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const validForSec = 30 - (nowSec % 30) || 30;
+
+      const items = accounts.map((account) => {
+        const ma = parseMaFile(decryptForUser(account.encrypted_ma, user.password_hash, user.id));
+        const code = generateSteamCode(ma.shared_secret);
+        return {
+          accountId: account.id,
+          code
+        };
+      });
+
+      return {
+        generatedAt: new Date().toISOString(),
+        validForSec,
+        items
+      };
+    } catch (error: any) {
+      return reply.code(400).send({ message: error.message });
+    }
   });
 
   app.get<{ Params: { accountId: string } }>(
@@ -102,7 +139,9 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
           accountName: account.account_name,
           steamid: account.steamid,
           source: account.source,
-          autoConfirm: Boolean(account.auto_confirm),
+          autoConfirm: Boolean(account.auto_confirm ?? account.auto_confirm_trades),
+          autoConfirmTrades: Boolean(account.auto_confirm_trades ?? account.auto_confirm),
+          autoConfirmLogins: Boolean(account.auto_confirm_logins),
           autoConfirmDelaySec: account.auto_confirm_delay_sec,
           lastCode: account.last_code,
           lastActive: account.last_active,
@@ -122,30 +161,65 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(429).send({ message: error.message });
     }
 
-    const file = await request.file();
-    if (!file) {
-      return reply.code(400).send({ message: 'No .maFile provided' });
-    }
-
     const user = await getUserSecret(request.user.id);
 
     try {
-      const ma = parseMaFile(await file.toBuffer());
+      const isMultipart = (request as any).isMultipart?.() ?? false;
+      let maSource: Buffer | string | Record<string, unknown>;
+      let aliasInput: string | undefined;
 
-      const aliasField = file.fields.alias as { value?: string } | undefined;
-      const alias = aliasField?.value?.toString().trim() || ma.account_name;
+      if (isMultipart) {
+        const file = await request.file();
+        if (!file) {
+          return reply.code(400).send({ message: 'No .maFile provided' });
+        }
+
+        maSource = await file.toBuffer();
+        const aliasField = file.fields.alias as { value?: string } | undefined;
+        aliasInput = aliasField?.value?.toString().trim();
+      } else {
+        const body = (request.body ?? {}) as Record<string, unknown>;
+        aliasInput = typeof body.alias === 'string' ? body.alias.trim() : undefined;
+
+        if (body.ma && typeof body.ma === 'object') {
+          maSource = body.ma as Record<string, unknown>;
+        } else if (body.raw && typeof body.raw === 'object') {
+          maSource = body.raw as Record<string, unknown>;
+        } else if (body.file && typeof body.file === 'object') {
+          maSource = body.file as Record<string, unknown>;
+        } else if (body.shared_secret && body.identity_secret && body.account_name) {
+          maSource = body;
+        } else {
+          return reply.code(400).send({
+            message:
+              'No .maFile payload provided. Use multipart file upload or JSON body with ma/shared_secret.'
+          });
+        }
+      }
+
+      const ma = parseMaFile(maSource);
+      const alias = aliasInput || ma.account_name;
+      const revocationCode =
+        (ma as any).revocation_code ??
+        (ma as any).Revocation_code ??
+        null;
 
       const encryptedMa = encryptForUser(JSON.stringify(ma), user.password_hash, user.id);
+      const encryptedRecoveryCode = revocationCode
+        ? encryptForUser(String(revocationCode), user.password_hash, user.id)
+        : null;
 
       const insertResult = await execute(
-        `INSERT INTO user_accounts (user_id, alias, account_name, steamid, encrypted_ma, source)
-         VALUES (?, ?, ?, ?, ?, 'mafile')`,
+        `INSERT INTO user_accounts
+          (user_id, alias, account_name, steamid, encrypted_ma, encrypted_revocation_code, source)
+         VALUES (?, ?, ?, ?, ?, ?, 'mafile')`,
         [
           user.id,
           alias,
           ma.account_name,
           ma.steamid ?? ma.Session?.SteamID ?? null,
-          encryptedMa
+          encryptedMa,
+          encryptedRecoveryCode
         ]
       );
 
@@ -172,7 +246,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         accountName: ma.account_name,
         steamid: ma.steamid ?? ma.Session?.SteamID ?? null,
         source: 'mafile',
-        hasRecoveryCode: false
+        hasRecoveryCode: Boolean(revocationCode)
       };
     } catch (error: any) {
       return reply.code(400).send({ message: `Failed to import .maFile: ${error.message}` });
@@ -214,6 +288,49 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         message: 'Activation code sent by Steam (email/SMS). Enter it to finish setup.'
       };
     } catch (error: any) {
+      if (error instanceof SteamEnrollmentError) {
+        if (error.code === 'STEAM_GUARD_REQUIRED') {
+          return reply.code(428).send({
+            code: error.code,
+            guardType: error.guardType,
+            guardDomain: error.guardDomain ?? null,
+            message: error.message
+          });
+        }
+
+        if (error.code === 'STEAM_GUARD_INVALID') {
+          return reply.code(400).send({
+            code: error.code,
+            message: error.message
+          });
+        }
+
+        if (error.code === 'STEAM_PHONE_NOT_VERIFIED') {
+          return reply.code(409).send({
+            code: error.code,
+            message: error.message,
+            details: error.details ?? null
+          });
+        }
+
+        if (error.code === 'STEAM_2FA_ALREADY_ENABLED') {
+          return reply.code(409).send({
+            code: error.code,
+            message: error.message,
+            details: error.details ?? null
+          });
+        }
+
+        if (error.code === 'STEAM_ENROLL_STATUS') {
+          return reply.code(409).send({
+            code: error.code,
+            status: error.status ?? null,
+            message: error.message,
+            details: error.details ?? null
+          });
+        }
+      }
+
       return reply.code(400).send({ message: error.message || 'Failed to start Steam enrollment' });
     }
   });
@@ -290,7 +407,13 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
 
   app.patch<{
     Params: { accountId: string };
-    Body: { alias?: string; autoConfirm?: boolean; autoConfirmDelaySec?: number };
+    Body: {
+      alias?: string;
+      autoConfirm?: boolean;
+      autoConfirmTrades?: boolean;
+      autoConfirmLogins?: boolean;
+      autoConfirmDelaySec?: number;
+    };
   }>('/api/accounts/:accountId', { preHandler: app.authenticate }, async (request, reply) => {
     const accountId = Number(request.params.accountId);
 
@@ -309,8 +432,19 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     }
 
     if (typeof request.body.autoConfirm === 'boolean') {
-      updates.push('auto_confirm = ?');
-      values.push(request.body.autoConfirm ? 1 : 0);
+      updates.push('auto_confirm = ?', 'auto_confirm_trades = ?');
+      const enabled = request.body.autoConfirm ? 1 : 0;
+      values.push(enabled, enabled);
+    }
+
+    if (typeof request.body.autoConfirmTrades === 'boolean') {
+      updates.push('auto_confirm_trades = ?');
+      values.push(request.body.autoConfirmTrades ? 1 : 0);
+    }
+
+    if (typeof request.body.autoConfirmLogins === 'boolean') {
+      updates.push('auto_confirm_logins = ?');
+      values.push(request.body.autoConfirmLogins ? 1 : 0);
     }
 
     if (typeof request.body.autoConfirmDelaySec === 'number') {

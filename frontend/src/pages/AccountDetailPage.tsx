@@ -61,14 +61,34 @@ export function AccountDetailPage() {
             <Button
               onClick={() => {
                 void (async () => {
-                  await accountApi.update(accountId, { autoConfirm: !account.autoConfirm });
+                  await accountApi.update(accountId, {
+                    autoConfirmTrades: !account.autoConfirmTrades
+                  });
                   await load();
                 })();
               }}
             >
-              {t('accountDetail.autoConfirm')}: {account.autoConfirm ? t('common.on') : t('common.off')}
+              {t('accountDetail.autoConfirmTrades')}: {account.autoConfirmTrades ? t('common.on') : t('common.off')}
+            </Button>
+            <Button
+              onClick={() => {
+                void (async () => {
+                  await accountApi.update(accountId, {
+                    autoConfirmLogins: !account.autoConfirmLogins
+                  });
+                  await load();
+                })();
+              }}
+            >
+              {t('accountDetail.autoConfirmLogins')}: {account.autoConfirmLogins ? t('common.on') : t('common.off')}
             </Button>
           </div>
+        </div>
+        <div className="mt-2 text-sm text-base-500">
+          {t('accountDetail.autoConfirmTradesHint', { delay: account.autoConfirmDelaySec })}
+        </div>
+        <div className="mt-1 text-sm text-base-500">
+          {t('accountDetail.autoConfirmLoginsHint', { delay: account.autoConfirmDelaySec })}
         </div>
 
         <div className="mt-4 grid gap-2 md:grid-cols-[140px_1fr_auto]">
