@@ -37,6 +37,32 @@ export type SteamSessionState = {
   oauthToken?: string;
 };
 
+function extractSteamIdFromCookieToken(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const match = value.match(/^(\d{17})\|\|/);
+  return match?.[1];
+}
+
+function extractSteamIdFromJwt(token: string | undefined): string | undefined {
+  if (!token || token.split('.').length < 2) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    if (typeof payload?.sub === 'string' && /^\d{17}$/.test(payload.sub)) {
+      return payload.sub;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
 export function parseMaFile(raw: Buffer | string | Record<string, unknown>): MaFile {
   const parsed =
     typeof raw === 'string'
@@ -45,12 +71,35 @@ export function parseMaFile(raw: Buffer | string | Record<string, unknown>): MaF
         ? JSON.parse(raw.toString('utf8'))
         : raw;
 
+  if (typeof parsed === 'object' && parsed !== null) {
+    const session = (parsed as any).Session;
+    const accessToken = session?.OAuthToken ?? session?.AccessToken;
+    const tokenSteamId = extractSteamIdFromJwt(typeof accessToken === 'string' ? accessToken : undefined);
+    const cookieSteamId = extractSteamIdFromCookieToken(
+      typeof session?.SteamLoginSecure === 'string' ? session.SteamLoginSecure : undefined
+    );
+
+    if (tokenSteamId && (!session || String(session.SteamID ?? '') !== tokenSteamId)) {
+      (parsed as any).Session = {
+        ...(session ?? {}),
+        SteamID: tokenSteamId
+      };
+    } else if (cookieSteamId && (!session || String(session.SteamID ?? '') !== cookieSteamId)) {
+      (parsed as any).Session = {
+        ...(session ?? {}),
+        SteamID: cookieSteamId
+      };
+    }
+  }
+
   return maSchema.parse(parsed);
 }
 
 export function extractSessionFromMa(ma: MaFile): SteamSessionState | null {
   const session = ma.Session;
-  const steamid = ma.steamid ?? session?.SteamID;
+  const tokenSteamId = extractSteamIdFromJwt(session?.OAuthToken ?? session?.AccessToken);
+  const cookieSteamId = extractSteamIdFromCookieToken(session?.SteamLoginSecure);
+  const steamid = tokenSteamId ?? cookieSteamId ?? session?.SteamID ?? ma.steamid;
   const steamLoginSecure = session?.SteamLoginSecure;
   const sessionid = session?.SessionID;
   const oauthToken = session?.OAuthToken ?? session?.AccessToken;

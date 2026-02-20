@@ -2,8 +2,9 @@ import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
 import { parseMaFile, type SteamSessionState } from '../utils/mafile';
-import { listConfirmations, respondToConfirmation } from '../services/steamService';
+import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
+import { sendTelegramMessage } from '../services/telegramService';
 
 type AccountBundle = {
   id: number;
@@ -12,11 +13,12 @@ type AccountBundle = {
   encrypted_ma: string;
   password_hash: string;
   telegram_user_id: string | null;
+  telegram_notify_login_codes: number;
 };
 
 async function getAccountBundle(userId: number, accountId: number): Promise<AccountBundle> {
   const rows = await queryRows<AccountBundle[]>(
-    `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, u.password_hash, u.telegram_user_id
+    `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes
      FROM user_accounts a
      JOIN users u ON u.id = a.user_id
      WHERE a.id = ? AND a.user_id = ?
@@ -30,6 +32,83 @@ async function getAccountBundle(userId: number, accountId: number): Promise<Acco
   }
 
   return account;
+}
+
+function resolveCodeTtlSec(nowSec: number): number {
+  return 30 - (nowSec % 30) || 30;
+}
+
+function formatLoginAlertMessage(params: {
+  alias: string;
+  steamid: string;
+  confirmationId: string;
+  headline: string;
+  summary: string;
+  code: string;
+  validForSec: number;
+}): string {
+  return [
+    'Steam login confirmation requested',
+    `Account: ${params.alias}`,
+    `SteamID: ${params.steamid}`,
+    `Confirmation ID: ${params.confirmationId}`,
+    params.headline ? `Title: ${params.headline}` : '',
+    params.summary ? `Details: ${params.summary}` : '',
+    `Steam Guard code: ${params.code} (expires in ${params.validForSec}s)`
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function sendLoginCodeAlert(params: {
+  telegramUserId: string | number;
+  alias: string;
+  steamid: string;
+  confirmationId: string;
+  headline: string;
+  summary: string;
+  sharedSecret: string;
+}): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttlSec = resolveCodeTtlSec(nowSec);
+  const currentCode = generateSteamCode(params.sharedSecret);
+
+  if (ttlSec < 15) {
+    await sendTelegramMessage(
+      params.telegramUserId,
+      `${formatLoginAlertMessage({
+        alias: params.alias,
+        steamid: params.steamid,
+        confirmationId: params.confirmationId,
+        headline: params.headline,
+        summary: params.summary,
+        code: currentCode,
+        validForSec: ttlSec
+      })}\nNext code will be sent in ${ttlSec}s.`
+    );
+
+    const timeout = setTimeout(() => {
+      void sendTelegramMessage(
+        params.telegramUserId,
+        `Next Steam Guard code for ${params.alias}: ${generateSteamCode(params.sharedSecret)}`
+      );
+    }, (ttlSec + 1) * 1000);
+    timeout.unref();
+    return;
+  }
+
+  await sendTelegramMessage(
+    params.telegramUserId,
+    formatLoginAlertMessage({
+      alias: params.alias,
+      steamid: params.steamid,
+      confirmationId: params.confirmationId,
+      headline: params.headline,
+      summary: params.summary,
+      code: currentCode,
+      validForSec: ttlSec
+    })
+  );
 }
 
 async function getSession(accountId: number): Promise<SteamSessionState | null> {
@@ -79,6 +158,22 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               [conf.nonce, conf.headline, conf.summary, accountId, conf.id]
             );
           } else {
+            await execute(
+              `INSERT INTO notifications (user_id, channel, type, payload)
+               VALUES (?, 'web', 'trade', CAST(? AS JSON))`,
+              [
+                request.user.id,
+                JSON.stringify({
+                  accountId,
+                  accountAlias: account.alias,
+                  confirmationId: conf.id,
+                  kind: 'trade',
+                  headline: conf.headline,
+                  summary: conf.summary
+                })
+              ]
+            );
+
             await execute(
               `INSERT INTO logs (user_id, account_id, type, details)
                VALUES (?, ?, 'trade', JSON_OBJECT('action', 'incoming', 'confirmationId', ?, 'headline', ?, 'summary', ?))`,
@@ -130,6 +225,22 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
             );
           } else {
             await execute(
+              `INSERT INTO notifications (user_id, channel, type, payload)
+               VALUES (?, 'web', 'login', CAST(? AS JSON))`,
+              [
+                request.user.id,
+                JSON.stringify({
+                  accountId,
+                  accountAlias: account.alias,
+                  confirmationId: conf.id,
+                  kind: 'login',
+                  headline: conf.headline,
+                  summary: conf.summary
+                })
+              ]
+            );
+
+            await execute(
               `INSERT INTO logs (user_id, account_id, type, details)
                VALUES (?, ?, 'login', JSON_OBJECT('action', 'incoming', 'confirmationId', ?, 'headline', ?, 'summary', ?))`,
               [request.user.id, accountId, conf.id, conf.headline, conf.summary]
@@ -140,6 +251,25 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               headline: conf.headline,
               summary: conf.summary
             });
+
+            if (account.telegram_user_id) {
+              if (account.telegram_notify_login_codes) {
+                await sendLoginCodeAlert({
+                  telegramUserId: account.telegram_user_id,
+                  alias: account.alias,
+                  steamid: ma.Session?.SteamID ?? ma.steamid ?? 'unknown',
+                  confirmationId: conf.id,
+                  headline: conf.headline,
+                  summary: conf.summary,
+                  sharedSecret: ma.shared_secret
+                });
+              } else {
+                await sendTelegramMessage(
+                  account.telegram_user_id,
+                  `New login confirmation for ${account.alias}: ${conf.headline}`
+                );
+              }
+            }
           }
         }
 
@@ -256,6 +386,118 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
       );
 
       wsHub.sendToUser(request.user.id, 'trade:rejected', { accountId, confirmationId });
+      return { success: true };
+    } catch (error: any) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  app.post<{
+    Params: { accountId: string; confirmationId: string };
+    Body: { nonce?: string };
+  }>('/api/steamauth/:accountId/logins/:confirmationId/confirm', { preHandler: app.authenticate }, async (request, reply) => {
+    const accountId = Number(request.params.accountId);
+    const confirmationId = request.params.confirmationId;
+
+    try {
+      const account = await getAccountBundle(request.user.id, accountId);
+      const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
+      const session = await getSession(accountId);
+
+      let nonce = request.body?.nonce;
+      if (!nonce) {
+        const rows = await queryRows<{ nonce: string }[]>(
+          'SELECT nonce FROM confirmations_cache WHERE account_id = ? AND confirmation_id = ? LIMIT 1',
+          [accountId, confirmationId]
+        );
+        nonce = rows[0]?.nonce;
+      }
+
+      if (!nonce) {
+        return reply.code(400).send({ message: 'Nonce is required for confirmation' });
+      }
+
+      const success = await respondToConfirmation({
+        ma,
+        session,
+        confirmationId,
+        nonce,
+        accept: true
+      });
+
+      if (!success) {
+        return reply.code(400).send({ message: 'Steam rejected confirmation' });
+      }
+
+      await execute(
+        `UPDATE confirmations_cache
+         SET status = 'confirmed', updated_at = UTC_TIMESTAMP()
+         WHERE account_id = ? AND confirmation_id = ?`,
+        [accountId, confirmationId]
+      );
+
+      await execute(
+        "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'login', JSON_OBJECT('confirmationId', ?, 'action', 'confirm'))",
+        [request.user.id, accountId, confirmationId]
+      );
+
+      wsHub.sendToUser(request.user.id, 'login:confirmed', { accountId, confirmationId });
+      return { success: true };
+    } catch (error: any) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  app.post<{
+    Params: { accountId: string; confirmationId: string };
+    Body: { nonce?: string };
+  }>('/api/steamauth/:accountId/logins/:confirmationId/reject', { preHandler: app.authenticate }, async (request, reply) => {
+    const accountId = Number(request.params.accountId);
+    const confirmationId = request.params.confirmationId;
+
+    try {
+      const account = await getAccountBundle(request.user.id, accountId);
+      const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
+      const session = await getSession(accountId);
+
+      let nonce = request.body?.nonce;
+      if (!nonce) {
+        const rows = await queryRows<{ nonce: string }[]>(
+          'SELECT nonce FROM confirmations_cache WHERE account_id = ? AND confirmation_id = ? LIMIT 1',
+          [accountId, confirmationId]
+        );
+        nonce = rows[0]?.nonce;
+      }
+
+      if (!nonce) {
+        return reply.code(400).send({ message: 'Nonce is required for rejection' });
+      }
+
+      const success = await respondToConfirmation({
+        ma,
+        session,
+        confirmationId,
+        nonce,
+        accept: false
+      });
+
+      if (!success) {
+        return reply.code(400).send({ message: 'Steam rejected operation' });
+      }
+
+      await execute(
+        `UPDATE confirmations_cache
+         SET status = 'rejected', updated_at = UTC_TIMESTAMP()
+         WHERE account_id = ? AND confirmation_id = ?`,
+        [accountId, confirmationId]
+      );
+
+      await execute(
+        "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'login', JSON_OBJECT('confirmationId', ?, 'action', 'reject'))",
+        [request.user.id, accountId, confirmationId]
+      );
+
+      wsHub.sendToUser(request.user.id, 'login:rejected', { accountId, confirmationId });
       return { success: true };
     } catch (error: any) {
       return reply.code(400).send({ message: error.message });

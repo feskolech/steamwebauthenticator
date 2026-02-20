@@ -3,12 +3,91 @@ import { env } from '../config/env';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
 import { parseMaFile } from '../utils/mafile';
-import { listConfirmations, respondToConfirmation } from '../services/steamService';
+import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
+const sessionExpiredNotifiedAt = new Map<number, number>();
+
+function resolveCodeTtlSec(nowSec: number): number {
+  return 30 - (nowSec % 30) || 30;
+}
+
+function formatLoginAlertMessage(params: {
+  alias: string;
+  steamid: string;
+  confirmationId: string;
+  headline: string;
+  summary: string;
+  code: string;
+  validForSec: number;
+}): string {
+  return [
+    'Steam login confirmation requested',
+    `Account: ${params.alias}`,
+    `SteamID: ${params.steamid}`,
+    `Confirmation ID: ${params.confirmationId}`,
+    params.headline ? `Title: ${params.headline}` : '',
+    params.summary ? `Details: ${params.summary}` : '',
+    `Steam Guard code: ${params.code} (expires in ${params.validForSec}s)`
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function sendLoginCodeAlert(params: {
+  telegramUserId: string | number;
+  alias: string;
+  steamid: string;
+  confirmationId: string;
+  headline: string;
+  summary: string;
+  sharedSecret: string;
+}): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttlSec = resolveCodeTtlSec(nowSec);
+  const currentCode = generateSteamCode(params.sharedSecret);
+
+  if (ttlSec < 15) {
+    await sendTelegramMessage(
+      params.telegramUserId,
+      `${formatLoginAlertMessage({
+        alias: params.alias,
+        steamid: params.steamid,
+        confirmationId: params.confirmationId,
+        headline: params.headline,
+        summary: params.summary,
+        code: currentCode,
+        validForSec: ttlSec
+      })}\nNext code will be sent in ${ttlSec}s.`
+    );
+
+    const timeout = setTimeout(() => {
+      void sendTelegramMessage(
+        params.telegramUserId,
+        `Next Steam Guard code for ${params.alias}: ${generateSteamCode(params.sharedSecret)}`
+      );
+    }, (ttlSec + 1) * 1000);
+
+    timeout.unref();
+    return;
+  }
+
+  await sendTelegramMessage(
+    params.telegramUserId,
+    formatLoginAlertMessage({
+      alias: params.alias,
+      steamid: params.steamid,
+      confirmationId: params.confirmationId,
+      headline: params.headline,
+      summary: params.summary,
+      code: currentCode,
+      validForSec: ttlSec
+    })
+  );
+}
 
 async function runCycle(app: FastifyInstance): Promise<void> {
   if (running) {
@@ -20,7 +99,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
   try {
     const accounts = await queryRows<any[]>(
       `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm_trades, a.auto_confirm_logins, a.auto_confirm_delay_sec,
-              u.password_hash, u.telegram_user_id
+              u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes
        FROM user_accounts a
        JOIN users u ON u.id = a.user_id
        WHERE a.auto_confirm_trades = TRUE OR a.auto_confirm_logins = TRUE OR u.telegram_user_id IS NOT NULL`
@@ -79,10 +158,23 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             );
 
             if (account.telegram_user_id) {
-              await sendTelegramMessage(
-                account.telegram_user_id,
-                `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`
-              );
+              if (kind === 'login' && account.telegram_notify_login_codes) {
+                const steamid = ma.steamid ?? ma.Session?.SteamID ?? 'unknown';
+                await sendLoginCodeAlert({
+                  telegramUserId: account.telegram_user_id,
+                  alias: account.alias,
+                  steamid,
+                  confirmationId: confirmation.id,
+                  headline: confirmation.headline,
+                  summary: confirmation.summary,
+                  sharedSecret: ma.shared_secret
+                });
+              } else {
+                await sendTelegramMessage(
+                  account.telegram_user_id,
+                  `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`
+                );
+              }
             }
 
             if (kind === 'trade' || kind === 'login') {
@@ -157,7 +249,41 @@ async function runCycle(app: FastifyInstance): Promise<void> {
           }
         }
       } catch (error) {
-        app.log.warn({ error, accountId: account.id }, 'Failed steam polling for account');
+        const errorMessage = error instanceof Error ? error.message : String(error);
+
+        if (errorMessage.toLowerCase().includes('steam session expired')) {
+          const now = Date.now();
+          const last = sessionExpiredNotifiedAt.get(Number(account.id)) ?? 0;
+          if (now - last > 15 * 60 * 1000) {
+            sessionExpiredNotifiedAt.set(Number(account.id), now);
+            const payload = {
+              accountId: account.id,
+              accountAlias: account.alias,
+              message: 'Steam session expired. Open account details and update session.'
+            };
+
+            await execute(
+              `INSERT INTO notifications (user_id, channel, type, payload)
+               VALUES (?, 'web', 'steam_session_expired', CAST(? AS JSON))`,
+              [account.user_id, JSON.stringify(payload)]
+            );
+
+            await execute(
+              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_expired'))",
+              [account.user_id, account.id]
+            );
+          }
+        }
+
+        app.log.warn(
+          {
+            accountId: account.id,
+            accountAlias: account.alias,
+            errorMessage,
+            errorStack: error instanceof Error ? error.stack : undefined
+          },
+          'Failed steam polling for account'
+        );
       }
     }
   } finally {

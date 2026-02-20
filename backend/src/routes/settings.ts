@@ -5,7 +5,8 @@ import { createOpaqueCode, hashApiKey } from '../utils/crypto';
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/settings', { preHandler: app.authenticate }, async (request) => {
     const users = await queryRows<any[]>(
-      `SELECT language, theme, steam_userid, twofa_method, telegram_user_id, telegram_username, api_key_last4
+      `SELECT language, theme, steam_userid, twofa_method, telegram_user_id, telegram_username,
+              telegram_notify_login_codes, api_key_last4
        FROM users
        WHERE id = ?
        LIMIT 1`,
@@ -21,6 +22,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       twofaMethod: user?.twofa_method ?? 'none',
       telegramLinked: Boolean(user?.telegram_user_id),
       telegramUsername: user?.telegram_username ?? null,
+      telegramNotifyLoginCodes: Boolean(user?.telegram_notify_login_codes),
       apiKeyLast4: user?.api_key_last4 ?? null
     };
   });
@@ -31,6 +33,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       theme?: 'light' | 'dark';
       steamUserId?: string | null;
       twofaMethod?: 'none' | 'telegram' | 'webauthn';
+      telegramNotifyLoginCodes?: boolean;
     };
   }>('/api/settings', { preHandler: app.authenticate }, async (request, reply) => {
     const updates: string[] = [];
@@ -72,6 +75,21 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       values.push(request.body.twofaMethod);
     }
 
+    if (typeof request.body.telegramNotifyLoginCodes === 'boolean') {
+      const users = await queryRows<{ telegram_user_id: string | null }[]>(
+        'SELECT telegram_user_id FROM users WHERE id = ? LIMIT 1',
+        [request.user.id]
+      );
+      const telegramLinked = Boolean(users[0]?.telegram_user_id);
+
+      if (request.body.telegramNotifyLoginCodes && !telegramLinked) {
+        return reply.code(400).send({ message: 'Link Telegram first' });
+      }
+
+      updates.push('telegram_notify_login_codes = ?');
+      values.push(request.body.telegramNotifyLoginCodes ? 1 : 0);
+    }
+
     if (updates.length === 0) {
       return reply.code(400).send({ message: 'No fields to update' });
     }
@@ -109,6 +127,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       `UPDATE users
        SET telegram_user_id = NULL,
            telegram_username = NULL,
+           telegram_notify_login_codes = FALSE,
            twofa_method = CASE WHEN twofa_method = 'telegram' THEN 'none' ELSE twofa_method END
        WHERE id = ?`,
       [request.user.id]

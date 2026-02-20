@@ -217,7 +217,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
           user.id,
           alias,
           ma.account_name,
-          ma.steamid ?? ma.Session?.SteamID ?? null,
+          ma.Session?.SteamID ?? ma.steamid ?? null,
           encryptedMa,
           encryptedRecoveryCode
         ]
@@ -244,7 +244,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         id: accountId,
         alias,
         accountName: ma.account_name,
-        steamid: ma.steamid ?? ma.Session?.SteamID ?? null,
+        steamid: ma.Session?.SteamID ?? ma.steamid ?? null,
         source: 'mafile',
         hasRecoveryCode: Boolean(revocationCode)
       };

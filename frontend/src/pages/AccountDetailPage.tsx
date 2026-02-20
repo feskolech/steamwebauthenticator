@@ -180,7 +180,11 @@ export function AccountDetailPage() {
                     className="h-8"
                     onClick={() => {
                       void (async () => {
-                        await steamApi.confirmTrade(accountId, item.confirmation_id, item.nonce);
+                        if (item.kind === 'login') {
+                          await steamApi.confirmLogin(accountId, item.confirmation_id, item.nonce);
+                        } else {
+                          await steamApi.confirmTrade(accountId, item.confirmation_id, item.nonce);
+                        }
                         await load();
                       })();
                     }}
@@ -192,7 +196,11 @@ export function AccountDetailPage() {
                     variant="danger"
                     onClick={() => {
                       void (async () => {
-                        await steamApi.rejectTrade(accountId, item.confirmation_id, item.nonce);
+                        if (item.kind === 'login') {
+                          await steamApi.rejectLogin(accountId, item.confirmation_id, item.nonce);
+                        } else {
+                          await steamApi.rejectTrade(accountId, item.confirmation_id, item.nonce);
+                        }
                         await load();
                       })();
                     }}

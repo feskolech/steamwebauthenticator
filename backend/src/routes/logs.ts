@@ -154,6 +154,48 @@ function mapLoginEvent(row: LogRow, details: Record<string, unknown>): UserLogIt
     };
   }
 
+  if (action === 'confirm') {
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      accountAlias: row.alias,
+      type: row.type,
+      category: 'steam',
+      eventKey: 'steam.login.confirmed',
+      context: {
+        confirmationId
+      },
+      createdAt: row.created_at,
+      details: {
+        action: 'confirm',
+        confirmationId,
+        headline: details.headline ?? null,
+        summary: details.summary ?? null
+      }
+    };
+  }
+
+  if (action === 'reject') {
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      accountAlias: row.alias,
+      type: row.type,
+      category: 'steam',
+      eventKey: 'steam.login.rejected',
+      context: {
+        confirmationId
+      },
+      createdAt: row.created_at,
+      details: {
+        action: 'reject',
+        confirmationId,
+        headline: details.headline ?? null,
+        summary: details.summary ?? null
+      }
+    };
+  }
+
   return {
     id: row.id,
     accountId: row.account_id,
@@ -229,6 +271,12 @@ function mapSystemEvent(
     session_updated: {
       category: 'steam',
       eventKey: 'steam.session.updated',
+      allowedDetails: ['event'],
+      context: () => ({})
+    },
+    session_expired: {
+      category: 'steam',
+      eventKey: 'steam.session.expired',
       allowedDetails: ['event'],
       context: () => ({})
     },

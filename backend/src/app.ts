@@ -13,6 +13,23 @@ import botRoutes from './routes/bot';
 import notificationRoutes from './routes/notifications';
 import { wsHub } from './services/wsHub';
 
+function cookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) {
+    return null;
+  }
+
+  const items = cookieHeader.split(';');
+  const target = `${name}=`;
+  for (const item of items) {
+    const trimmed = item.trim();
+    if (trimmed.startsWith(target)) {
+      return decodeURIComponent(trimmed.slice(target.length));
+    }
+  }
+
+  return null;
+}
+
 export async function buildApp() {
   const app = Fastify({
     logger: {
@@ -30,12 +47,16 @@ export async function buildApp() {
   await app.register(authPlugin);
 
   app.get('/ws', { websocket: true }, (connection, request) => {
+    const socket = (connection as any)?.socket ?? connection;
     const queryToken = (request.query as { token?: string } | undefined)?.token;
     const cookieToken = (request.cookies as any)?.sg_token;
-    const token = queryToken ?? cookieToken;
+    const headerToken = cookieValue(request.headers.cookie, 'sg_token');
+    const token = queryToken ?? cookieToken ?? headerToken;
 
     if (!token) {
-      connection.socket.close(4001, 'Unauthorized');
+      if (socket && typeof (socket as any).close === 'function') {
+        (socket as any).close(4001, 'Unauthorized');
+      }
       return;
     }
 
@@ -43,17 +64,19 @@ export async function buildApp() {
       const decoded = app.jwt.verify<{ id: number }>(token);
       wsHub.add(decoded.id, connection);
 
-      connection.socket.send(
+      socket.send(
         JSON.stringify({ event: 'connected', payload: { userId: decoded.id }, ts: Date.now() })
       );
 
-      connection.socket.on('message', (raw: any) => {
+      socket.on('message', (raw: any) => {
         if (raw.toString() === 'ping') {
-          connection.socket.send(JSON.stringify({ event: 'pong', ts: Date.now() }));
+          socket.send(JSON.stringify({ event: 'pong', ts: Date.now() }));
         }
       });
     } catch {
-      connection.socket.close(4001, 'Unauthorized');
+      if (socket && typeof (socket as any).close === 'function') {
+        (socket as any).close(4001, 'Unauthorized');
+      }
     }
   });
 

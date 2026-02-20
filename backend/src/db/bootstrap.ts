@@ -55,6 +55,12 @@ async function ensureSchemaUpgrades(): Promise<void> {
        WHERE auto_confirm = TRUE`
     );
   }
+
+  if (!(await hasColumn('users', 'telegram_notify_login_codes'))) {
+    await execute(
+      'ALTER TABLE users ADD COLUMN telegram_notify_login_codes BOOLEAN NOT NULL DEFAULT FALSE AFTER telegram_username'
+    );
+  }
 }
 
 export async function ensureBootstrapData(): Promise<void> {

@@ -18,6 +18,8 @@ export function SettingsPage() {
     linked: false,
     username: null
   });
+  const [telegramNotifyLoginCodes, setTelegramNotifyLoginCodes] = useState(false);
+  const [telegramNotifySaving, setTelegramNotifySaving] = useState(false);
   const [telegramCode, setTelegramCode] = useState<string | null>(null);
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -32,6 +34,7 @@ export function SettingsPage() {
       linked: settings.telegramLinked,
       username: settings.telegramUsername
     });
+    setTelegramNotifyLoginCodes(settings.telegramNotifyLoginCodes);
   };
 
   useEffect(() => {
@@ -44,7 +47,8 @@ export function SettingsPage() {
         language,
         theme,
         steamUserId: steamUserId || null,
-        twofaMethod
+        twofaMethod,
+        telegramNotifyLoginCodes
       });
       await refreshUser();
       setMessage(t('settings.saved'));
@@ -62,6 +66,20 @@ export function SettingsPage() {
       setMessage(t('settings.passkeyAttached'));
     } catch (error: any) {
       setMessage(error?.response?.data?.message || t('settings.passkeySetupFailed'));
+    }
+  };
+
+  const saveTelegramNotifications = async () => {
+    try {
+      setTelegramNotifySaving(true);
+      await settingsApi.update({
+        telegramNotifyLoginCodes
+      });
+      setMessage(t('settings.saved'));
+    } catch (error: any) {
+      setMessage(error?.response?.data?.message || t('settings.saveFailed'));
+    } finally {
+      setTelegramNotifySaving(false);
     }
   };
 
@@ -166,6 +184,35 @@ export function SettingsPage() {
             {t('settings.useCommandInBot')}: {telegramCode}
           </div>
         )}
+
+        <div className="mt-4 rounded-xl border border-base-200 p-3 dark:border-base-700">
+          <label className="flex items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 accent-primary"
+              checked={telegramNotifyLoginCodes}
+              disabled={!telegramInfo.linked}
+              onChange={(event) => setTelegramNotifyLoginCodes(event.target.checked)}
+            />
+            <div>
+              <div className="font-medium">{t('settings.telegramNotifyLoginCodes')}</div>
+              <div className="text-base-500">{t('settings.telegramNotifyLoginCodesHint')}</div>
+              {!telegramInfo.linked && (
+                <div className="mt-1 text-warning">{t('settings.telegramLinkFirst')}</div>
+              )}
+            </div>
+          </label>
+
+          <div className="mt-3">
+            <Button
+              variant="secondary"
+              disabled={!telegramInfo.linked || telegramNotifySaving}
+              onClick={() => void saveTelegramNotifications()}
+            >
+              {telegramNotifySaving ? t('auth.pleaseWait') : t('common.save')}
+            </Button>
+          </div>
+        </div>
       </Card>
 
       <Card>

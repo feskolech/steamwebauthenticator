@@ -116,6 +116,14 @@ export const steamApi = {
   rejectTrade: (accountId: number, confirmationId: string, nonce?: string) =>
     apiClient.post<{ success: boolean }>(`/api/steamauth/${accountId}/trades/${confirmationId}/reject`, {
       nonce
+    }),
+  confirmLogin: (accountId: number, confirmationId: string, nonce?: string) =>
+    apiClient.post<{ success: boolean }>(`/api/steamauth/${accountId}/logins/${confirmationId}/confirm`, {
+      nonce
+    }),
+  rejectLogin: (accountId: number, confirmationId: string, nonce?: string) =>
+    apiClient.post<{ success: boolean }>(`/api/steamauth/${accountId}/logins/${confirmationId}/reject`, {
+      nonce
     })
 };
 
@@ -128,6 +136,7 @@ export const settingsApi = {
       twofaMethod: 'none' | 'telegram' | 'webauthn';
       telegramLinked: boolean;
       telegramUsername: string | null;
+      telegramNotifyLoginCodes: boolean;
       apiKeyLast4: string | null;
     }>('/api/settings'),
   update: (payload: {
@@ -135,6 +144,7 @@ export const settingsApi = {
     theme?: 'light' | 'dark';
     steamUserId?: string | null;
     twofaMethod?: 'none' | 'telegram' | 'webauthn';
+    telegramNotifyLoginCodes?: boolean;
   }) => apiClient.patch<{ success: boolean }>('/api/settings', payload),
   generateTelegramCode: () =>
     apiClient.post<{ code: string; command: string; expiresInSec: number }>('/api/settings/telegram/link-code'),

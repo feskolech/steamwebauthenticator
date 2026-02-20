@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   steam_userid VARCHAR(64) NULL,
   telegram_user_id BIGINT NULL UNIQUE,
   telegram_username VARCHAR(255) NULL,
+  telegram_notify_login_codes BOOLEAN NOT NULL DEFAULT FALSE,
   twofa_method ENUM('none', 'telegram', 'webauthn') NOT NULL DEFAULT 'none',
   api_key_hash VARCHAR(128) NULL,
   api_key_last4 VARCHAR(4) NULL,

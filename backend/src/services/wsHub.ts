@@ -1,17 +1,26 @@
 class WsHub {
   private readonly clients = new Map<number, Set<any>>();
 
+  private toSocket(connection: any): any {
+    return connection?.socket ?? connection;
+  }
+
   add(userId: number, connection: any): void {
+    const socket = this.toSocket(connection);
+    if (!socket || typeof socket.on !== 'function') {
+      return;
+    }
+
     const list = this.clients.get(userId) ?? new Set<any>();
-    list.add(connection);
+    list.add(socket);
     this.clients.set(userId, list);
 
-    connection.socket.on('close', () => {
+    socket.on('close', () => {
       const current = this.clients.get(userId);
       if (!current) {
         return;
       }
-      current.delete(connection);
+      current.delete(socket);
       if (current.size === 0) {
         this.clients.delete(userId);
       }
@@ -26,8 +35,9 @@ class WsHub {
 
     const message = JSON.stringify({ event, payload, ts: Date.now() });
     for (const conn of list) {
-      if (conn.socket.readyState === conn.socket.OPEN) {
-        conn.socket.send(message);
+      const isOpen = conn.readyState === conn.OPEN || conn.readyState === 1;
+      if (isOpen && typeof conn.send === 'function') {
+        conn.send(message);
       }
     }
   }
