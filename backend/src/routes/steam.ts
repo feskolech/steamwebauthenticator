@@ -16,6 +16,9 @@ type AccountBundle = {
   telegram_notify_login_codes: number;
 };
 
+const STALE_PENDING_RECONCILE_MINUTES = 2;
+const STALE_PENDING_TTL_MINUTES = 30;
+
 async function getAccountBundle(userId: number, accountId: number): Promise<AccountBundle> {
   const rows = await queryRows<AccountBundle[]>(
     `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes
@@ -62,6 +65,7 @@ function formatLoginAlertMessage(params: {
 
 async function sendLoginCodeAlert(params: {
   telegramUserId: string | number;
+  cacheId: number;
   alias: string;
   steamid: string;
   confirmationId: string;
@@ -84,7 +88,15 @@ async function sendLoginCodeAlert(params: {
         summary: params.summary,
         code: currentCode,
         validForSec: ttlSec
-      })}\nNext code will be sent in ${ttlSec}s.`
+      })}\nNext code will be sent in ${ttlSec}s.`,
+      {
+        inlineKeyboard: [
+          [
+            { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
+            { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
+          ]
+        ]
+      }
     );
 
     const timeout = setTimeout(() => {
@@ -107,7 +119,15 @@ async function sendLoginCodeAlert(params: {
       summary: params.summary,
       code: currentCode,
       validForSec: ttlSec
-    })
+    }),
+    {
+      inlineKeyboard: [
+        [
+          { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
+          { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
+        ]
+      ]
+    }
   );
 }
 
@@ -128,6 +148,48 @@ async function getSession(accountId: number): Promise<SteamSessionState | null> 
   }
 }
 
+async function expireStalePendingByKind(
+  accountId: number,
+  kind: 'trade' | 'login' | 'other',
+  activeConfirmationIds: string[]
+): Promise<void> {
+  if (activeConfirmationIds.length === 0) {
+    await execute(
+      `UPDATE confirmations_cache
+       SET status = 'expired', updated_at = UTC_TIMESTAMP()
+       WHERE account_id = ?
+         AND kind = ?
+         AND status = 'pending'
+         AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)`,
+      [accountId, kind, STALE_PENDING_TTL_MINUTES]
+    );
+    return;
+  }
+
+  const placeholders = activeConfirmationIds.map(() => '?').join(', ');
+  await execute(
+    `UPDATE confirmations_cache
+     SET status = 'expired', updated_at = UTC_TIMESTAMP()
+     WHERE account_id = ?
+       AND kind = ?
+       AND status = 'pending'
+       AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+       AND confirmation_id NOT IN (${placeholders})`,
+    [accountId, kind, STALE_PENDING_RECONCILE_MINUTES, ...activeConfirmationIds]
+  );
+}
+
+async function expireOldPending(accountId: number): Promise<void> {
+  await execute(
+    `UPDATE confirmations_cache
+     SET status = 'expired', updated_at = UTC_TIMESTAMP()
+     WHERE account_id = ?
+       AND status = 'pending'
+       AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)`,
+    [accountId, STALE_PENDING_TTL_MINUTES]
+  );
+}
+
 const steamRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { accountId: string } }>(
     '/api/steamauth/:accountId/trades',
@@ -142,6 +204,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         const confirmations = await listConfirmations(ma, session);
 
         const trades = confirmations.filter((c) => c.type === 'trade');
+        const tradeIds = trades.map((item) => item.id);
 
         for (const conf of trades) {
           const inserted = await execute(
@@ -188,6 +251,8 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
           }
         }
 
+        await expireStalePendingByKind(accountId, 'trade', tradeIds);
+
         return { items: trades };
       } catch (error: any) {
         return reply.code(400).send({ message: error.message });
@@ -208,6 +273,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         const confirmations = await listConfirmations(ma, session);
 
         const loginConfirms = confirmations.filter((c) => c.type === 'login');
+        const loginIds = loginConfirms.map((item) => item.id);
 
         for (const conf of loginConfirms) {
           const inserted = await execute(
@@ -256,6 +322,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               if (account.telegram_notify_login_codes) {
                 await sendLoginCodeAlert({
                   telegramUserId: account.telegram_user_id,
+                  cacheId: Number(inserted.insertId),
                   alias: account.alias,
                   steamid: ma.Session?.SteamID ?? ma.steamid ?? 'unknown',
                   confirmationId: conf.id,
@@ -266,12 +333,22 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               } else {
                 await sendTelegramMessage(
                   account.telegram_user_id,
-                  `New login confirmation for ${account.alias}: ${conf.headline}`
+                  `New login confirmation for ${account.alias}: ${conf.headline}`,
+                  {
+                    inlineKeyboard: [
+                      [
+                        { text: 'Впустить', callbackData: `sgl:a:${Number(inserted.insertId)}` },
+                        { text: 'Не впускать', callbackData: `sgl:r:${Number(inserted.insertId)}` }
+                      ]
+                    ]
+                  }
                 );
               }
             }
           }
         }
+
+        await expireStalePendingByKind(accountId, 'login', loginIds);
 
         return { items: loginConfirms };
       } catch (error: any) {
@@ -518,6 +595,8 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
       if (!ownership[0]) {
         return reply.code(404).send({ message: 'Account not found' });
       }
+
+      await expireOldPending(accountId);
 
       const items = await queryRows<any[]>(
         `SELECT confirmation_id, nonce, kind, headline, summary, status, created_at, updated_at

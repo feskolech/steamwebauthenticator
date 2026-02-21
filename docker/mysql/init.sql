@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS confirmations_cache (
   kind VARCHAR(64) NOT NULL,
   headline VARCHAR(255) NOT NULL,
   summary TEXT NULL,
-  status ENUM('pending', 'confirmed', 'rejected') NOT NULL DEFAULT 'pending',
+  status ENUM('pending', 'confirmed', 'rejected', 'expired') NOT NULL DEFAULT 'pending',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_confirmations (account_id, confirmation_id),

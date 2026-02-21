@@ -19,6 +19,20 @@ async function hasColumn(tableName: string, columnName: string): Promise<boolean
   return Number(rows[0]?.cnt ?? 0) > 0;
 }
 
+async function getColumnType(tableName: string, columnName: string): Promise<string | null> {
+  const rows = await queryRows<{ column_type: string }[]>(
+    `SELECT COLUMN_TYPE AS column_type
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?
+     LIMIT 1`,
+    [tableName, columnName]
+  );
+
+  return rows[0]?.column_type ?? null;
+}
+
 async function ensureSchemaUpgrades(): Promise<void> {
   if (!(await hasColumn('user_accounts', 'encrypted_revocation_code'))) {
     await execute(
@@ -59,6 +73,13 @@ async function ensureSchemaUpgrades(): Promise<void> {
   if (!(await hasColumn('users', 'telegram_notify_login_codes'))) {
     await execute(
       'ALTER TABLE users ADD COLUMN telegram_notify_login_codes BOOLEAN NOT NULL DEFAULT FALSE AFTER telegram_username'
+    );
+  }
+
+  const confirmationStatusType = await getColumnType('confirmations_cache', 'status');
+  if (confirmationStatusType && !confirmationStatusType.includes("'expired'")) {
+    await execute(
+      "ALTER TABLE confirmations_cache MODIFY COLUMN status ENUM('pending', 'confirmed', 'rejected', 'expired') NOT NULL DEFAULT 'pending'"
     );
   }
 }

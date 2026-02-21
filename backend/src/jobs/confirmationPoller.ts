@@ -10,6 +10,8 @@ import { sendTelegramMessage } from '../services/telegramService';
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 const sessionExpiredNotifiedAt = new Map<number, number>();
+const STALE_PENDING_RECONCILE_MINUTES = 2;
+const STALE_PENDING_TTL_MINUTES = 30;
 
 function resolveCodeTtlSec(nowSec: number): number {
   return 30 - (nowSec % 30) || 30;
@@ -39,6 +41,7 @@ function formatLoginAlertMessage(params: {
 
 async function sendLoginCodeAlert(params: {
   telegramUserId: string | number;
+  cacheId: number;
   alias: string;
   steamid: string;
   confirmationId: string;
@@ -61,7 +64,15 @@ async function sendLoginCodeAlert(params: {
         summary: params.summary,
         code: currentCode,
         validForSec: ttlSec
-      })}\nNext code will be sent in ${ttlSec}s.`
+      })}\nNext code will be sent in ${ttlSec}s.`,
+      {
+        inlineKeyboard: [
+          [
+            { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
+            { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
+          ]
+        ]
+      }
     );
 
     const timeout = setTimeout(() => {
@@ -85,7 +96,46 @@ async function sendLoginCodeAlert(params: {
       summary: params.summary,
       code: currentCode,
       validForSec: ttlSec
-    })
+    }),
+    {
+      inlineKeyboard: [
+        [
+          { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
+          { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
+        ]
+      ]
+    }
+  );
+}
+
+async function expireStalePendingByKind(
+  accountId: number,
+  kind: 'trade' | 'login' | 'other',
+  activeConfirmationIds: string[]
+): Promise<void> {
+  if (activeConfirmationIds.length === 0) {
+    await execute(
+      `UPDATE confirmations_cache
+       SET status = 'expired', updated_at = UTC_TIMESTAMP()
+       WHERE account_id = ?
+         AND kind = ?
+         AND status = 'pending'
+         AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)`,
+      [accountId, kind, STALE_PENDING_TTL_MINUTES]
+    );
+    return;
+  }
+
+  const placeholders = activeConfirmationIds.map(() => '?').join(', ');
+  await execute(
+    `UPDATE confirmations_cache
+     SET status = 'expired', updated_at = UTC_TIMESTAMP()
+     WHERE account_id = ?
+       AND kind = ?
+       AND status = 'pending'
+       AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+       AND confirmation_id NOT IN (${placeholders})`,
+    [accountId, kind, STALE_PENDING_RECONCILE_MINUTES, ...activeConfirmationIds]
   );
 }
 
@@ -118,9 +168,15 @@ async function runCycle(app: FastifyInstance): Promise<void> {
 
         const session = sessions[0] ? JSON.parse(sessions[0].session_json) : null;
         const confirmations = await listConfirmations(ma, session);
+        const byKind: Record<'trade' | 'login' | 'other', Set<string>> = {
+          trade: new Set(),
+          login: new Set(),
+          other: new Set()
+        };
 
         for (const confirmation of confirmations) {
           const kind = confirmation.type === 'trade' ? 'trade' : confirmation.type === 'login' ? 'login' : 'other';
+          byKind[kind].add(confirmation.id);
 
           const inserted = await execute(
             `INSERT IGNORE INTO confirmations_cache (account_id, confirmation_id, nonce, kind, headline, summary, status)
@@ -162,6 +218,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
                 const steamid = ma.steamid ?? ma.Session?.SteamID ?? 'unknown';
                 await sendLoginCodeAlert({
                   telegramUserId: account.telegram_user_id,
+                  cacheId: Number(inserted.insertId),
                   alias: account.alias,
                   steamid,
                   confirmationId: confirmation.id,
@@ -172,7 +229,17 @@ async function runCycle(app: FastifyInstance): Promise<void> {
               } else {
                 await sendTelegramMessage(
                   account.telegram_user_id,
-                  `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`
+                  `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`,
+                  kind === 'login'
+                    ? {
+                        inlineKeyboard: [
+                          [
+                            { text: 'Впустить', callbackData: `sgl:a:${Number(inserted.insertId)}` },
+                            { text: 'Не впускать', callbackData: `sgl:r:${Number(inserted.insertId)}` }
+                          ]
+                        ]
+                      }
+                    : undefined
                 );
               }
             }
@@ -248,6 +315,10 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             });
           }
         }
+
+        await expireStalePendingByKind(account.id, 'trade', [...byKind.trade]);
+        await expireStalePendingByKind(account.id, 'login', [...byKind.login]);
+        await expireStalePendingByKind(account.id, 'other', [...byKind.other]);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
 

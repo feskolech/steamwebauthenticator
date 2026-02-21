@@ -6,7 +6,7 @@ from typing import Any
 import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 logging.basicConfig(level=logging.INFO)
 
@@ -166,6 +166,55 @@ async def confirm(message: Message) -> None:
         await message.answer('Trade confirmation sent to Steam successfully.')
     except Exception as err:  # noqa: BLE001
         await message.answer(f'Confirm failed: {err}')
+
+
+@dp.callback_query()
+async def inline_login_decision(callback: CallbackQuery) -> None:
+    data = callback.data or ''
+    if not data.startswith('sgl:'):
+        await callback.answer()
+        return
+
+    parts = data.split(':', 2)
+    if len(parts) != 3:
+        await callback.answer('Invalid action payload', show_alert=True)
+        return
+
+    action, cache_id_raw = parts[1], parts[2]
+    if action not in ('a', 'r') or not cache_id_raw.isdigit():
+        await callback.answer('Invalid action payload', show_alert=True)
+        return
+
+    accept = action == 'a'
+
+    try:
+        result = await call_backend(
+            'POST',
+            '/api/telegram/bot/respond',
+            {
+                'telegramUserId': str(callback.from_user.id),
+                'cacheId': int(cache_id_raw),
+                'accept': accept,
+            },
+        )
+
+        await callback.answer('Done')
+
+        if callback.message is not None:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:  # noqa: BLE001
+                pass
+
+            decision = 'approved' if accept else 'rejected'
+            kind = str(result.get('kind', 'confirmation'))
+            account_id = result.get('accountId')
+            conf_id = result.get('confirmationId')
+            await callback.message.answer(
+                f"Telegram inline action: {kind} {decision} (account {account_id}, confirmation {conf_id})."
+            )
+    except Exception as err:  # noqa: BLE001
+        await callback.answer(f'Action failed: {err}', show_alert=True)
 
 
 @dp.message()

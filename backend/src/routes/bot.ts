@@ -4,6 +4,7 @@ import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, respondToConfirmation } from '../services/steamService';
+import { wsHub } from '../services/wsHub';
 
 async function botAuth(request: any, reply: any): Promise<void> {
   const token = request.headers['x-telegram-bot-token'];
@@ -217,6 +218,104 @@ const botRoutes: FastifyPluginAsync = async (app) => {
     );
 
     return { success: true };
+  });
+
+  app.post<{
+    Body: {
+      telegramUserId: string;
+      cacheId: number;
+      accept: boolean;
+    };
+  }>('/api/telegram/bot/respond', { preHandler: botAuth }, async (request, reply) => {
+    const users = await queryRows<{ id: number; password_hash: string }[]>(
+      'SELECT id, password_hash FROM users WHERE telegram_user_id = ? LIMIT 1',
+      [request.body.telegramUserId]
+    );
+
+    const user = users[0];
+    if (!user) {
+      return reply.code(404).send({ message: 'No linked user for telegram id' });
+    }
+
+    const rows = await queryRows<
+      {
+        account_id: number;
+        confirmation_id: string;
+        nonce: string | null;
+        kind: string;
+        encrypted_ma: string;
+        status: string;
+      }[]
+    >(
+      `SELECT c.account_id, c.confirmation_id, c.nonce, c.kind, c.status, a.encrypted_ma
+       FROM confirmations_cache c
+       JOIN user_accounts a ON a.id = c.account_id
+       WHERE c.id = ?
+         AND a.user_id = ?
+       LIMIT 1`,
+      [request.body.cacheId, user.id]
+    );
+
+    const item = rows[0];
+    if (!item) {
+      return reply.code(404).send({ message: 'Confirmation not found' });
+    }
+
+    if (item.status !== 'pending') {
+      return reply.code(409).send({ message: `Confirmation already ${item.status}` });
+    }
+
+    const ma = parseMaFile(decryptForUser(item.encrypted_ma, user.password_hash, user.id));
+
+    const sessionRows = await queryRows<{ session_json: string }[]>(
+      'SELECT session_json FROM account_sessions WHERE account_id = ? LIMIT 1',
+      [item.account_id]
+    );
+    const session = sessionRows[0] ? JSON.parse(sessionRows[0].session_json) : null;
+
+    const nonce = item.nonce;
+    if (!nonce) {
+      return reply.code(400).send({ message: 'Nonce missing' });
+    }
+
+    const success = await respondToConfirmation({
+      ma,
+      session,
+      confirmationId: item.confirmation_id,
+      nonce,
+      accept: request.body.accept
+    });
+
+    if (!success) {
+      return reply.code(400).send({ message: 'Steam confirmation failed' });
+    }
+
+    const nextStatus = request.body.accept ? 'confirmed' : 'rejected';
+    await execute(
+      'UPDATE confirmations_cache SET status = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?',
+      [nextStatus, request.body.cacheId]
+    );
+
+    if (item.kind === 'trade' || item.kind === 'login') {
+      await execute(
+        `INSERT INTO logs (user_id, account_id, type, details)
+         VALUES (?, ?, ?, JSON_OBJECT('confirmationId', ?, 'action', ?, 'source', 'telegram_inline'))`,
+        [user.id, item.account_id, item.kind, item.confirmation_id, request.body.accept ? 'confirm' : 'reject']
+      );
+
+      wsHub.sendToUser(user.id, `${item.kind}:${request.body.accept ? 'confirmed' : 'rejected'}`, {
+        accountId: item.account_id,
+        confirmationId: item.confirmation_id
+      });
+    }
+
+    return {
+      success: true,
+      kind: item.kind,
+      accountId: item.account_id,
+      confirmationId: item.confirmation_id,
+      status: nextStatus
+    };
   });
 };
 
