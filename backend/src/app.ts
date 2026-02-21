@@ -12,6 +12,7 @@ import userApiRoutes from './routes/userApi';
 import botRoutes from './routes/bot';
 import notificationRoutes from './routes/notifications';
 import { wsHub } from './services/wsHub';
+import { getBearerToken, verifySessionToken } from './utils/jwt';
 
 function cookieValue(cookieHeader: string | undefined, name: string): string | null {
   if (!cookieHeader) {
@@ -51,7 +52,8 @@ export async function buildApp() {
     const queryToken = (request.query as { token?: string } | undefined)?.token;
     const cookieToken = (request.cookies as any)?.sg_token;
     const headerToken = cookieValue(request.headers.cookie, 'sg_token');
-    const token = queryToken ?? cookieToken ?? headerToken;
+    const bearerToken = getBearerToken(request.headers.authorization);
+    const token = queryToken ?? cookieToken ?? headerToken ?? bearerToken;
 
     if (!token) {
       if (socket && typeof (socket as any).close === 'function') {
@@ -61,7 +63,11 @@ export async function buildApp() {
     }
 
     try {
-      const decoded = app.jwt.verify<{ id: number }>(token);
+      const decoded = verifySessionToken(token);
+      if (!decoded) {
+        throw new Error('invalid-token');
+      }
+
       wsHub.add(decoded.id, connection);
 
       socket.send(

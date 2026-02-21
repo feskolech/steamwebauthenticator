@@ -2,11 +2,9 @@ import fp from 'fastify-plugin';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import cookie from '@fastify/cookie';
-import jwt from '@fastify/jwt';
 import csrfProtection from '@fastify/csrf-protection';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
-import swaggerUi from '@fastify/swagger-ui';
 import websocket from '@fastify/websocket';
 import { env, isProd } from '../config/env';
 
@@ -35,14 +33,6 @@ export default fp(async (app) => {
       httpOnly: true,
       secure: isProd,
       path: '/'
-    }
-  });
-
-  await app.register(jwt, {
-    secret: env.JWT_SECRET,
-    cookie: {
-      cookieName: 'sg_token',
-      signed: false
     }
   });
 
@@ -83,8 +73,8 @@ export default fp(async (app) => {
     }
   });
 
-  await app.register(swaggerUi, {
-    routePrefix: '/api-docs'
+  app.get('/api-docs/openapi.json', async () => {
+    return app.swagger();
   });
 
   if (isProd) {

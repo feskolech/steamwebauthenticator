@@ -1,12 +1,14 @@
 import { type FastifyReply, type FastifyInstance } from 'fastify';
 import { isProd } from '../config/env';
+import { signSessionToken } from './jwt';
+import { type JwtUser } from '../types/auth';
 
 export async function issueSessionCookie(
-  app: FastifyInstance,
+  _app: FastifyInstance,
   reply: FastifyReply,
-  payload: { id: number; email: string; role: 'user' | 'admin' }
+  payload: JwtUser
 ): Promise<void> {
-  const token = await reply.jwtSign(payload, { expiresIn: '7d' });
+  const token = signSessionToken(payload);
 
   reply.setCookie('sg_token', token, {
     httpOnly: true,

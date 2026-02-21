@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser, encryptForUser } from '../utils/crypto';
+import { encodeAccountSession } from '../utils/accountSession';
 import { extractSessionFromMa, parseMaFile } from '../utils/mafile';
 import { generateSteamCode } from '../services/steamService';
 import { guardWriteByIp } from '../middleware/rateLimiters';
@@ -227,11 +228,12 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
 
       const extractedSession = extractSessionFromMa(ma);
       if (extractedSession) {
+        const encryptedSession = encodeAccountSession(extractedSession, user.password_hash, user.id);
         await execute(
           `INSERT INTO account_sessions (account_id, session_json)
            VALUES (?, ?)
            ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
-          [accountId, JSON.stringify(extractedSession)]
+          [accountId, encryptedSession]
         );
       }
 
@@ -378,11 +380,12 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       const accountId = Number(insertResult.insertId);
 
       if (finalized.session) {
+        const encryptedSession = encodeAccountSession(finalized.session, user.password_hash, user.id);
         await execute(
           `INSERT INTO account_sessions (account_id, session_json)
            VALUES (?, ?)
            ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
-          [accountId, JSON.stringify(finalized.session)]
+          [accountId, encryptedSession]
         );
       }
 
@@ -474,6 +477,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     Body: { steamLoginSecure?: string; sessionid?: string; oauthToken?: string; steamid?: string };
   }>('/api/accounts/:accountId/session', { preHandler: app.authenticate }, async (request, reply) => {
     const accountId = Number(request.params.accountId);
+    const user = await getUserSecret(request.user.id);
 
     try {
       await getAccountByOwner(request.user.id, accountId);
@@ -492,7 +496,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       `INSERT INTO account_sessions (account_id, session_json)
        VALUES (?, ?)
        ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
-      [accountId, JSON.stringify(session)]
+      [accountId, encodeAccountSession(session, user.password_hash, user.id)]
     );
 
     await execute(

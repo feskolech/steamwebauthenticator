@@ -1,21 +1,14 @@
 import 'fastify';
-
-export type JwtUser = {
-  id: number;
-  email: string;
-  role: 'user' | 'admin';
-};
-
-declare module '@fastify/jwt' {
-  interface FastifyJWT {
-    payload: JwtUser;
-    user: JwtUser;
-  }
-}
+import type { FastifyReply } from 'fastify';
+import type { JwtUser } from './auth';
 
 declare module 'fastify' {
+  interface FastifyRequest {
+    user: JwtUser;
+  }
+
   interface FastifyInstance {
-    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    authenticate: (request: import('fastify').FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireAdmin: (request: import('fastify').FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }

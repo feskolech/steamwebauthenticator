@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../config/env';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
+import { decodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, respondToConfirmation } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
@@ -56,7 +57,8 @@ const botRoutes: FastifyPluginAsync = async (app) => {
            telegram_user_id = ?,
            telegram_username = ?
        WHERE code = ?
-         AND expires_at > UTC_TIMESTAMP()`,
+         AND expires_at > UTC_TIMESTAMP()
+         AND consumed_at IS NULL`,
       [telegramUserId, username ?? null, code]
     );
 
@@ -185,7 +187,9 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       [request.body.accountId]
     );
 
-    const session = sessionRows[0] ? JSON.parse(sessionRows[0].session_json) : null;
+    const session = sessionRows[0]
+      ? decodeAccountSession(sessionRows[0].session_json, user.password_hash, user.id)
+      : null;
 
     let nonce = request.body.nonce;
     if (!nonce) {
@@ -271,7 +275,9 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       'SELECT session_json FROM account_sessions WHERE account_id = ? LIMIT 1',
       [item.account_id]
     );
-    const session = sessionRows[0] ? JSON.parse(sessionRows[0].session_json) : null;
+    const session = sessionRows[0]
+      ? decodeAccountSession(sessionRows[0].session_json, user.password_hash, user.id)
+      : null;
 
     const nonce = item.nonce;
     if (!nonce) {

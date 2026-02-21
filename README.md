@@ -30,7 +30,7 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 - JWT cookie sessions, CSRF protection, Helmet, bcrypt, brute-force guard via `rate-limiter-flexible`.
 - i18n EN/RU + light/dark theme.
 - Admin panel with global registration toggle.
-- Swagger docs at `/api-docs`.
+- OpenAPI docs JSON at `/api-docs/openapi.json`.
 
 ## Default admin
 
@@ -74,7 +74,7 @@ make dev
 Open:
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:3001`
-- Swagger: `http://localhost:3001/api-docs`
+- OpenAPI: `http://localhost:3001/api-docs/openapi.json`
 
 ## Make targets
 

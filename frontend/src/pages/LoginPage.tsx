@@ -21,6 +21,7 @@ export function LoginPage() {
   const [requires2fa, setRequires2fa] = useState(false);
   const [telegramOAuth, setTelegramOAuth] = useState<{
     code: string;
+    pollSecret: string;
     deepLink: string | null;
     manualCommand: string;
   } | null>(null);
@@ -40,7 +41,7 @@ export function LoginPage() {
 
     const timer = setInterval(async () => {
       try {
-        const status = await authApi.pollTelegramOAuth(telegramOAuth.code);
+        const status = await authApi.pollTelegramOAuth(telegramOAuth.code, telegramOAuth.pollSecret);
         if (status.status === 'ok') {
           await refreshUser();
           navigate('/dashboard');
@@ -54,6 +55,12 @@ export function LoginPage() {
         }
 
         if (status.status === 'expired') {
+          setError(t('auth.telegramCodeExpired'));
+          setTelegramOAuth(null);
+          return;
+        }
+
+        if (status.status === 'used') {
           setError(t('auth.telegramCodeExpired'));
           setTelegramOAuth(null);
         }

@@ -1,9 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { execute, queryRows } from '../db/pool';
-import { createOpaqueCode, createNumericCode } from '../utils/crypto';
+import { createOpaqueCode, createNumericCode, hashApiKey } from '../utils/crypto';
 import { clearSessionCookie, issueSessionCookie } from '../utils/session';
-import { guardLoginByIp, guardWriteByIp } from '../middleware/rateLimiters';
+import { guardLogin2faByIp, guardLoginByIp, guardWriteByIp } from '../middleware/rateLimiters';
 import { getUserByEmail, getUserById, sanitizeUser } from '../services/userService';
 import { sendTelegramMessage } from '../services/telegramService';
 import { env } from '../config/env';
@@ -23,6 +24,17 @@ type LoginBody = {
   email: string;
   password: string;
 };
+
+function safeHashEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
 
 const authRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/auth/csrf', async (_request, reply) => {
@@ -139,6 +151,12 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post<{ Body: { email: string; code: string } }>('/api/auth/login/verify-telegram', async (request, reply) => {
+    try {
+      await guardLogin2faByIp(request.ip);
+    } catch (error: any) {
+      return reply.code(429).send({ message: error.message });
+    }
+
     const email = request.body.email?.toLowerCase().trim();
     const code = request.body.code?.trim();
 
@@ -148,7 +166,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     const user = await getUserByEmail(email);
     if (!user) {
-      return reply.code(404).send({ message: 'User not found' });
+      return reply.code(401).send({ message: 'Invalid 2FA code' });
     }
 
     const pendingRows = await queryRows<{ id: number; code: string }[]>(
@@ -198,10 +216,12 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.post('/api/auth/telegram/oauth/start', async () => {
     const code = createOpaqueCode(8);
+    const pollSecret = createOpaqueCode(16);
+    const pollSecretHash = hashApiKey(pollSecret);
     await execute(
-      `INSERT INTO telegram_oauth_codes (code, expires_at)
-       VALUES (?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))`,
-      [code]
+      `INSERT INTO telegram_oauth_codes (code, poll_secret_hash, expires_at)
+       VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))`,
+      [code, pollSecretHash]
     );
 
     const startParam = `login_${code}`;
@@ -211,6 +231,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       code,
+      pollSecret,
       startParam,
       deepLink,
       manualCommand: `/start ${startParam}`,
@@ -218,56 +239,91 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get<{ Params: { code: string } }>('/api/auth/telegram/oauth/poll/:code', async (request, reply) => {
-    const rows = await queryRows<{
-      code: string;
-      approved: number;
-      telegram_user_id: string | null;
-      expires_at: Date;
-    }[]>(
-      `SELECT code, approved, telegram_user_id, expires_at
-       FROM telegram_oauth_codes
-       WHERE code = ?
-       LIMIT 1`,
-      [request.params.code]
-    );
+  app.get<{ Params: { code: string }; Querystring: { token?: string } }>(
+    '/api/auth/telegram/oauth/poll/:code',
+    async (request, reply) => {
+      const rawHeaderToken = request.headers['x-telegram-poll-token'];
+      const headerToken = Array.isArray(rawHeaderToken) ? rawHeaderToken[0] : rawHeaderToken;
+      const pollToken = headerToken?.trim() || request.query.token?.trim();
+      if (!pollToken) {
+        return reply.code(401).send({ message: 'Missing poll token' });
+      }
 
-    const authCode = rows[0];
-    if (!authCode) {
-      return reply.code(404).send({ message: 'Code not found' });
+      const rows = await queryRows<{
+        code: string;
+        approved: number;
+        telegram_user_id: string | null;
+        poll_secret_hash: string;
+        consumed_at: Date | null;
+        expires_at: Date;
+      }[]>(
+        `SELECT code, approved, telegram_user_id, poll_secret_hash, consumed_at, expires_at
+         FROM telegram_oauth_codes
+         WHERE code = ?
+         LIMIT 1`,
+        [request.params.code]
+      );
+
+      const authCode = rows[0];
+      if (!authCode) {
+        return reply.code(404).send({ message: 'Code not found' });
+      }
+
+      const pollTokenHash = hashApiKey(pollToken);
+      if (!safeHashEqual(authCode.poll_secret_hash, pollTokenHash)) {
+        return reply.code(401).send({ message: 'Invalid poll token' });
+      }
+
+      if (new Date(authCode.expires_at).getTime() < Date.now()) {
+        return { status: 'expired' };
+      }
+
+      if (authCode.consumed_at) {
+        return { status: 'used' };
+      }
+
+      if (!authCode.approved || !authCode.telegram_user_id) {
+        return { status: 'pending' };
+      }
+
+      const users = await queryRows<any[]>(
+        'SELECT * FROM users WHERE telegram_user_id = ? LIMIT 1',
+        [authCode.telegram_user_id]
+      );
+      const user = users[0];
+
+      if (!user) {
+        return { status: 'unlinked' };
+      }
+
+      const consumeResult = await execute(
+        `UPDATE telegram_oauth_codes
+         SET consumed_at = UTC_TIMESTAMP()
+         WHERE code = ?
+           AND approved = TRUE
+           AND consumed_at IS NULL
+           AND expires_at > UTC_TIMESTAMP()`,
+        [request.params.code]
+      );
+
+      if (consumeResult.affectedRows === 0) {
+        return { status: 'used' };
+      }
+
+      await issueSessionCookie(app, reply, {
+        id: user.id,
+        email: user.email,
+        role: user.role
+      });
+
+      await execute(
+        "INSERT INTO logs (user_id, type, details) VALUES (?, 'login', JSON_OBJECT('method', 'telegram_oauth'))",
+        [user.id]
+      );
+
+      return { status: 'ok', user: sanitizeUser(user) };
     }
-
-    if (new Date(authCode.expires_at).getTime() < Date.now()) {
-      return { status: 'expired' };
-    }
-
-    if (!authCode.approved || !authCode.telegram_user_id) {
-      return { status: 'pending' };
-    }
-
-    const users = await queryRows<any[]>(
-      'SELECT * FROM users WHERE telegram_user_id = ? LIMIT 1',
-      [authCode.telegram_user_id]
-    );
-    const user = users[0];
-
-    if (!user) {
-      return { status: 'unlinked' };
-    }
-
-    await issueSessionCookie(app, reply, {
-      id: user.id,
-      email: user.email,
-      role: user.role
-    });
-
-    await execute(
-      "INSERT INTO logs (user_id, type, details) VALUES (?, 'login', JSON_OBJECT('method', 'telegram_oauth'))",
-      [user.id]
-    );
-
-    return { status: 'ok', user: sanitizeUser(user) };
-  });
+  );
 
   app.post('/api/auth/webauthn/register/options', { preHandler: app.authenticate }, async (request, reply) => {
     const currentUser = await getUserById(request.user.id);
@@ -362,7 +418,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     const user = await getUserByEmail(email);
     if (!user) {
-      return reply.code(404).send({ message: 'User not found' });
+      return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
     }
 
     const creds = await queryRows<{ credential_id: string }[]>(
@@ -371,7 +427,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     );
 
     if (creds.length === 0) {
-      return reply.code(400).send({ message: 'No passkeys registered' });
+      return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
     }
 
     const options = await createAuthenticationOptions(creds.map((c) => c.credential_id));
@@ -393,7 +449,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     const user = await getUserByEmail(email);
     if (!user) {
-      return reply.code(404).send({ message: 'User not found' });
+      return reply.code(400).send({ message: 'Passkey login failed' });
     }
 
     const challenges = await queryRows<{ id: number; challenge: string }[]>(

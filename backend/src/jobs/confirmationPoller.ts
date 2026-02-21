@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { env } from '../config/env';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
+import { decodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
@@ -166,7 +167,9 @@ async function runCycle(app: FastifyInstance): Promise<void> {
           [account.id]
         );
 
-        const session = sessions[0] ? JSON.parse(sessions[0].session_json) : null;
+        const session = sessions[0]
+          ? decodeAccountSession(sessions[0].session_json, account.password_hash, Number(account.user_id))
+          : null;
         const confirmations = await listConfirmations(ma, session);
         const byKind: Record<'trade' | 'login' | 'other', Set<string>> = {
           trade: new Set(),

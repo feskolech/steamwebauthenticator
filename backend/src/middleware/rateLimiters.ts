@@ -7,6 +7,13 @@ const loginLimiter = new RateLimiterMemory({
   blockDuration: 300
 });
 
+const login2faLimiter = new RateLimiterMemory({
+  keyPrefix: 'login_2fa_ip',
+  points: 8,
+  duration: 60,
+  blockDuration: 300
+});
+
 const writeLimiter = new RateLimiterMemory({
   keyPrefix: 'write_ip',
   points: 120,
@@ -24,6 +31,10 @@ async function consumeOrThrow(limiter: RateLimiterMemory, key: string): Promise<
 
 export async function guardLoginByIp(ip: string): Promise<void> {
   await consumeOrThrow(loginLimiter, ip);
+}
+
+export async function guardLogin2faByIp(ip: string): Promise<void> {
+  await consumeOrThrow(login2faLimiter, ip);
 }
 
 export async function guardWriteByIp(ip: string): Promise<void> {

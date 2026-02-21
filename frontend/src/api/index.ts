@@ -16,13 +16,18 @@ export const authApi = {
   startTelegramOAuth: () =>
     apiClient.post<{
       code: string;
+      pollSecret: string;
       deepLink: string | null;
       manualCommand: string;
       startParam: string;
       expiresInSec: number;
     }>('/api/auth/telegram/oauth/start'),
-  pollTelegramOAuth: (code: string) =>
-    apiClient.get<{ status: string; user?: User }>(`/api/auth/telegram/oauth/poll/${code}`),
+  pollTelegramOAuth: (code: string, token: string) =>
+    apiClient.get<{ status: string; user?: User }>(`/api/auth/telegram/oauth/poll/${code}`, {
+      headers: {
+        'x-telegram-poll-token': token
+      }
+    }),
   webauthnLoginOptions: (email: string) =>
     apiClient.post<Record<string, unknown>>('/api/auth/webauthn/login/options', { email }),
   webauthnLoginVerify: (email: string, response: unknown) =>

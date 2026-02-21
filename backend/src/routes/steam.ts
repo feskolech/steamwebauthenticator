@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
+import { decodeAccountSession } from '../utils/accountSession';
 import { parseMaFile, type SteamSessionState } from '../utils/mafile';
 import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
@@ -131,7 +132,7 @@ async function sendLoginCodeAlert(params: {
   );
 }
 
-async function getSession(accountId: number): Promise<SteamSessionState | null> {
+async function getSession(accountId: number, passwordHash: string, userId: number): Promise<SteamSessionState | null> {
   const rows = await queryRows<{ session_json: string }[]>(
     'SELECT session_json FROM account_sessions WHERE account_id = ? LIMIT 1',
     [accountId]
@@ -141,11 +142,7 @@ async function getSession(accountId: number): Promise<SteamSessionState | null> 
     return null;
   }
 
-  try {
-    return JSON.parse(rows[0].session_json) as SteamSessionState;
-  } catch {
-    return null;
-  }
+  return decodeAccountSession(rows[0].session_json, passwordHash, userId);
 }
 
 async function expireStalePendingByKind(
@@ -200,7 +197,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
       try {
         const account = await getAccountBundle(request.user.id, accountId);
         const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-        const session = await getSession(accountId);
+        const session = await getSession(accountId, account.password_hash, account.user_id);
         const confirmations = await listConfirmations(ma, session);
 
         const trades = confirmations.filter((c) => c.type === 'trade');
@@ -269,7 +266,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
       try {
         const account = await getAccountBundle(request.user.id, accountId);
         const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-        const session = await getSession(accountId);
+        const session = await getSession(accountId, account.password_hash, account.user_id);
         const confirmations = await listConfirmations(ma, session);
 
         const loginConfirms = confirmations.filter((c) => c.type === 'login');
@@ -367,7 +364,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
     try {
       const account = await getAccountBundle(request.user.id, accountId);
       const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-      const session = await getSession(accountId);
+      const session = await getSession(accountId, account.password_hash, account.user_id);
 
       let nonce = request.body?.nonce;
       if (!nonce) {
@@ -423,7 +420,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
     try {
       const account = await getAccountBundle(request.user.id, accountId);
       const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-      const session = await getSession(accountId);
+      const session = await getSession(accountId, account.password_hash, account.user_id);
 
       let nonce = request.body?.nonce;
       if (!nonce) {
@@ -479,7 +476,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
     try {
       const account = await getAccountBundle(request.user.id, accountId);
       const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-      const session = await getSession(accountId);
+      const session = await getSession(accountId, account.password_hash, account.user_id);
 
       let nonce = request.body?.nonce;
       if (!nonce) {
@@ -535,7 +532,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
     try {
       const account = await getAccountBundle(request.user.id, accountId);
       const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
-      const session = await getSession(accountId);
+      const session = await getSession(accountId, account.password_hash, account.user_id);
 
       let nonce = request.body?.nonce;
       if (!nonce) {

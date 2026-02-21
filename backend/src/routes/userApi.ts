@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
+import { decodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, respondToConfirmation } from '../services/steamService';
 
@@ -21,7 +22,7 @@ async function getAccountForUser(userId: number, accountId: number): Promise<any
   return rows[0];
 }
 
-async function getSession(accountId: number): Promise<any | null> {
+async function getSession(accountId: number, passwordHash: string, userId: number): Promise<any | null> {
   const rows = await queryRows<{ session_json: string }[]>(
     'SELECT session_json FROM account_sessions WHERE account_id = ? LIMIT 1',
     [accountId]
@@ -31,7 +32,7 @@ async function getSession(accountId: number): Promise<any | null> {
     return null;
   }
 
-  return JSON.parse(rows[0].session_json);
+  return decodeAccountSession(rows[0].session_json, passwordHash, userId);
 }
 
 const userApiRoutes: FastifyPluginAsync = async (app) => {
@@ -89,7 +90,7 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
       try {
         const account = await getAccountForUser(request.user.id, accountId);
         const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, request.user.id));
-        const session = await getSession(accountId);
+        const session = await getSession(accountId, account.password_hash, request.user.id);
 
         let nonce = request.body?.nonce;
         if (!nonce) {

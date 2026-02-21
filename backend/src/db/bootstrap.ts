@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { env } from '../config/env';
+import { encryptForUser } from '../utils/crypto';
 import { execute, queryRows } from './pool';
 
 type UserRow = {
@@ -76,6 +77,18 @@ async function ensureSchemaUpgrades(): Promise<void> {
     );
   }
 
+  if (!(await hasColumn('telegram_oauth_codes', 'poll_secret_hash'))) {
+    await execute(
+      "ALTER TABLE telegram_oauth_codes ADD COLUMN poll_secret_hash VARCHAR(128) NOT NULL DEFAULT '' AFTER code"
+    );
+  }
+
+  if (!(await hasColumn('telegram_oauth_codes', 'consumed_at'))) {
+    await execute(
+      'ALTER TABLE telegram_oauth_codes ADD COLUMN consumed_at DATETIME NULL AFTER approved'
+    );
+  }
+
   const confirmationStatusType = await getColumnType('confirmations_cache', 'status');
   if (confirmationStatusType && !confirmationStatusType.includes("'expired'")) {
     await execute(
@@ -84,8 +97,59 @@ async function ensureSchemaUpgrades(): Promise<void> {
   }
 }
 
+async function migrateLegacyAccountSessions(): Promise<void> {
+  const rows = await queryRows<
+    {
+      id: number;
+      session_json: string;
+      user_id: number;
+      password_hash: string;
+    }[]
+  >(
+    `SELECT s.id, s.session_json, a.user_id, u.password_hash
+     FROM account_sessions s
+     JOIN user_accounts a ON a.id = s.account_id
+     JOIN users u ON u.id = a.user_id`
+  );
+
+  for (const row of rows) {
+    const raw = row.session_json?.trim();
+    if (!raw || !raw.startsWith('{')) {
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      continue;
+    }
+
+    const encrypted = encryptForUser(JSON.stringify(parsed), row.password_hash, Number(row.user_id));
+    await execute('UPDATE account_sessions SET session_json = ? WHERE id = ?', [encrypted, row.id]);
+  }
+}
+
+async function invalidateLegacyTelegramOauthCodes(): Promise<void> {
+  if (!(await hasColumn('telegram_oauth_codes', 'poll_secret_hash'))) {
+    return;
+  }
+
+  await execute(
+    `UPDATE telegram_oauth_codes
+     SET expires_at = UTC_TIMESTAMP()
+     WHERE poll_secret_hash = ''`
+  );
+}
+
 export async function ensureBootstrapData(): Promise<void> {
   await ensureSchemaUpgrades();
+  await migrateLegacyAccountSessions();
+  await invalidateLegacyTelegramOauthCodes();
 
   await execute(
     'INSERT INTO global_settings (id, registration_enabled) VALUES (1, TRUE) ON DUPLICATE KEY UPDATE id = id'
