@@ -10,6 +10,16 @@ import { authApi } from '../api';
 
 type Mode = 'login' | 'register';
 
+const TELEGRAM_OAUTH_STORAGE_KEY = 'steamguard-telegram-oauth-pending';
+
+type TelegramOAuthPending = {
+  code: string;
+  pollSecret: string;
+  deepLink: string | null;
+  manualCommand: string;
+  expiresAt: number;
+};
+
 export function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -24,6 +34,7 @@ export function LoginPage() {
     pollSecret: string;
     deepLink: string | null;
     manualCommand: string;
+    expiresAt: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,14 +46,54 @@ export function LoginPage() {
   }, [user, navigate]);
 
   useEffect(() => {
+    const raw = sessionStorage.getItem(TELEGRAM_OAUTH_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as TelegramOAuthPending;
+      if (
+        !parsed ||
+        typeof parsed.code !== 'string' ||
+        typeof parsed.pollSecret !== 'string' ||
+        typeof parsed.manualCommand !== 'string' ||
+        typeof parsed.expiresAt !== 'number'
+      ) {
+        sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+        return;
+      }
+
+      if (parsed.expiresAt <= Date.now()) {
+        sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+        return;
+      }
+
+      setTelegramOAuth(parsed);
+    } catch {
+      sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!telegramOAuth) {
+      sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+      return;
+    }
+
+    sessionStorage.setItem(TELEGRAM_OAUTH_STORAGE_KEY, JSON.stringify(telegramOAuth));
+  }, [telegramOAuth]);
+
+  useEffect(() => {
     if (!telegramOAuth) {
       return;
     }
 
-    const timer = setInterval(async () => {
+    const pollOnce = async () => {
       try {
         const status = await authApi.pollTelegramOAuth(telegramOAuth.code, telegramOAuth.pollSecret);
         if (status.status === 'ok') {
+          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
           await refreshUser();
           navigate('/dashboard');
           return;
@@ -51,25 +102,49 @@ export function LoginPage() {
         if (status.status === 'unlinked') {
           setError(t('auth.telegramNotLinked'));
           setTelegramOAuth(null);
+          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
           return;
         }
 
         if (status.status === 'expired') {
           setError(t('auth.telegramCodeExpired'));
           setTelegramOAuth(null);
+          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
           return;
         }
 
         if (status.status === 'used') {
           setError(t('auth.telegramCodeExpired'));
           setTelegramOAuth(null);
+          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
         }
       } catch {
         // ignore polling issues
       }
+    };
+
+    void pollOnce();
+    const timer = setInterval(() => {
+      void pollOnce();
     }, 3000);
 
-    return () => clearInterval(timer);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void pollOnce();
+      }
+    };
+    const onFocus = () => {
+      void pollOnce();
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [telegramOAuth, refreshUser, navigate, t]);
 
   const submitLabel = useMemo(
@@ -117,9 +192,16 @@ export function LoginPage() {
     setError(null);
     try {
       const response = await authApi.startTelegramOAuth();
-      setTelegramOAuth(response);
+      const nextState = {
+        ...response,
+        expiresAt: Date.now() + response.expiresInSec * 1000
+      };
+      setTelegramOAuth(nextState);
       if (response.deepLink) {
-        window.open(response.deepLink, '_blank', 'noopener,noreferrer');
+        const opened = window.open(response.deepLink, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          window.location.href = response.deepLink;
+        }
       }
     } catch (err: any) {
       setError(err?.response?.data?.message || err.message || t('auth.telegramLoginFailed'));
@@ -213,12 +295,47 @@ export function LoginPage() {
           {telegramOAuth && (
             <div className="rounded-xl border border-accent-500/20 bg-accent-500/10 p-3 text-xs">
               <div>{t('auth.telegramPending')}</div>
+              <div>{t('auth.telegramReturnHint')}</div>
               <div>{t('auth.command')}: {telegramOAuth.manualCommand}</div>
               {telegramOAuth.deepLink && (
                 <a className="underline" href={telegramOAuth.deepLink} target="_blank" rel="noreferrer">
                   {t('auth.openBot')}
                 </a>
               )}
+              <div className="pt-2">
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() => {
+                    void authApi
+                      .pollTelegramOAuth(telegramOAuth.code, telegramOAuth.pollSecret)
+                      .then(async (status) => {
+                        if (status.status === 'ok') {
+                          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+                          await refreshUser();
+                          navigate('/dashboard');
+                          return;
+                        }
+
+                        if (status.status === 'expired' || status.status === 'used') {
+                          setError(t('auth.telegramCodeExpired'));
+                          setTelegramOAuth(null);
+                          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+                          return;
+                        }
+
+                        if (status.status === 'unlinked') {
+                          setError(t('auth.telegramNotLinked'));
+                          setTelegramOAuth(null);
+                          sessionStorage.removeItem(TELEGRAM_OAUTH_STORAGE_KEY);
+                        }
+                      })
+                      .catch(() => undefined);
+                  }}
+                >
+                  {t('auth.checkNow')}
+                </Button>
+              </div>
             </div>
           )}
         </div>
