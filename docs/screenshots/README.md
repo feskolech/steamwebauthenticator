@@ -1,12 +1,12 @@
-# Screenshot Placeholders
+# Screenshots
 
-This folder is reserved for UI screenshots for OSS README usage.
+This folder stores screenshots used by `README.md`.
 
-Recommended captures:
-1. `login.png` - login + telegram/passkey buttons.
-2. `dashboard.png` - metrics cards + realtime events.
-3. `accounts.png` - multi-account list + actions.
-4. `account-detail.png` - confirmation queue + session setup.
-5. `settings.png` - i18n/theme/telegram/api-key controls.
-6. `admin.png` - registration toggle and user list.
-7. `logs.png` - activity timeline.
+Current set:
+1. `login.png` - login screen.
+2. `dashboard.png` - dashboard metrics and live blocks.
+3. `accounts.png` - multi-account list.
+4. `account-detail.png` - confirmation queue and account controls.
+5. `settings.png` - profile/security settings.
+6. `admin.png` - admin panel.
+7. `logs.png` - user activity logs.

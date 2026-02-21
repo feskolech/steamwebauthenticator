@@ -16,9 +16,6 @@ export function AuthLayout({ children }: { children: ReactNode }) {
               <h1 className="text-3xl font-bold">{t('appName')}</h1>
               <p className="mt-3 max-w-sm text-sm text-base-700 dark:text-base-200">{t('subtitle')}</p>
             </div>
-            <div className="rounded-2xl border border-base-200/50 bg-white/60 p-4 text-xs dark:border-base-700 dark:bg-base-900/60">
-              {t('authLayout.description')}
-            </div>
           </div>
         </div>
         <div className="p-6 md:p-10">

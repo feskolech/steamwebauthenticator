@@ -134,17 +134,28 @@ Internal bot endpoints are under `/api/telegram/bot/*` and protected by header:
 
 - `x-telegram-bot-token: $TELEGRAM_BOT_TOKEN`
 
-## Screenshots (descriptive)
+## Screenshots
 
-Planned screenshot set (see `docs/screenshots/README.md`):
+### Login
+![Login](docs/screenshots/login.png)
 
-1. `login.png`: login/register card with Telegram and Passkey actions.
-2. `dashboard.png`: account/notification/live cards + real-time events list.
-3. `accounts.png`: multi-account table with import/code/export/details actions.
-4. `account-detail.png`: confirmation queue with confirm/reject and session fields.
-5. `settings.png`: language/theme/twofa/telegram/api-key controls.
-6. `admin.png`: registration toggle and user overview.
-7. `logs.png`: activity feed for trade/login/code/system events.
+### Dashboard
+![Dashboard](docs/screenshots/dashboard.png)
+
+### Accounts
+![Accounts](docs/screenshots/accounts.png)
+
+### Account Detail
+![Account detail](docs/screenshots/account-detail.png)
+
+### Settings
+![Settings](docs/screenshots/settings.png)
+
+### Admin
+![Admin](docs/screenshots/admin.png)
+
+### Logs
+![Logs](docs/screenshots/logs.png)
 
 ## Deployment on VPS
 
