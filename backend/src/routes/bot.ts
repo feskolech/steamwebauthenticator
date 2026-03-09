@@ -2,9 +2,9 @@ import type { FastifyPluginAsync } from 'fastify';
 import { env } from '../config/env';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
-import { decodeAccountSession } from '../utils/accountSession';
+import { decodeAccountSession, encodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
-import { generateSteamCode, respondToConfirmation } from '../services/steamService';
+import { generateSteamCode, respondToConfirmationWithSessionRecovery } from '../services/steamService';
 import { wsHub } from '../services/wsHub';
 
 async function botAuth(request: any, reply: any): Promise<void> {
@@ -204,7 +204,7 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ message: 'Nonce missing' });
     }
 
-    const success = await respondToConfirmation({
+    const response = await respondToConfirmationWithSessionRecovery({
       ma,
       session,
       confirmationId: request.body.confirmationId,
@@ -212,7 +212,16 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       accept: true
     });
 
-    if (!success) {
+    if (response.refreshed && response.session) {
+      await execute(
+        `INSERT INTO account_sessions (account_id, session_json)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+        [request.body.accountId, encodeAccountSession(response.session, user.password_hash, user.id)]
+      );
+    }
+
+    if (!response.success) {
       return reply.code(400).send({ message: 'Steam confirmation failed' });
     }
 
@@ -284,7 +293,7 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ message: 'Nonce missing' });
     }
 
-    const success = await respondToConfirmation({
+    const response = await respondToConfirmationWithSessionRecovery({
       ma,
       session,
       confirmationId: item.confirmation_id,
@@ -292,7 +301,16 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       accept: request.body.accept
     });
 
-    if (!success) {
+    if (response.refreshed && response.session) {
+      await execute(
+        `INSERT INTO account_sessions (account_id, session_json)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+        [item.account_id, encodeAccountSession(response.session, user.password_hash, user.id)]
+      );
+    }
+
+    if (!response.success) {
       return reply.code(400).send({ message: 'Steam confirmation failed' });
     }
 

@@ -1,9 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
-import { decodeAccountSession } from '../utils/accountSession';
+import { decodeAccountSession, encodeAccountSession } from '../utils/accountSession';
 import { parseMaFile, type SteamSessionState } from '../utils/mafile';
-import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
+import {
+  generateSteamCode,
+  listConfirmationsWithSessionRecovery,
+  respondToConfirmationWithSessionRecovery
+} from '../services/steamService';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 
@@ -145,6 +149,20 @@ async function getSession(accountId: number, passwordHash: string, userId: numbe
   return decodeAccountSession(rows[0].session_json, passwordHash, userId);
 }
 
+async function storeSession(
+  accountId: number,
+  session: SteamSessionState,
+  passwordHash: string,
+  userId: number
+): Promise<void> {
+  await execute(
+    `INSERT INTO account_sessions (account_id, session_json)
+     VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+    [accountId, encodeAccountSession(session, passwordHash, userId)]
+  );
+}
+
 async function expireStalePendingByKind(
   accountId: number,
   kind: 'trade' | 'login' | 'other',
@@ -198,7 +216,12 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         const account = await getAccountBundle(request.user.id, accountId);
         const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
         const session = await getSession(accountId, account.password_hash, account.user_id);
-        const confirmations = await listConfirmations(ma, session);
+        const result = await listConfirmationsWithSessionRecovery(ma, session);
+        const confirmations = result.confirmations;
+
+        if (result.refreshed && result.session) {
+          await storeSession(accountId, result.session, account.password_hash, account.user_id);
+        }
 
         const trades = confirmations.filter((c) => c.type === 'trade');
         const tradeIds = trades.map((item) => item.id);
@@ -267,7 +290,12 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         const account = await getAccountBundle(request.user.id, accountId);
         const ma = parseMaFile(decryptForUser(account.encrypted_ma, account.password_hash, account.user_id));
         const session = await getSession(accountId, account.password_hash, account.user_id);
-        const confirmations = await listConfirmations(ma, session);
+        const result = await listConfirmationsWithSessionRecovery(ma, session);
+        const confirmations = result.confirmations;
+
+        if (result.refreshed && result.session) {
+          await storeSession(accountId, result.session, account.password_hash, account.user_id);
+        }
 
         const loginConfirms = confirmations.filter((c) => c.type === 'login');
         const loginIds = loginConfirms.map((item) => item.id);
@@ -379,7 +407,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ message: 'Nonce is required for confirmation' });
       }
 
-      const success = await respondToConfirmation({
+      const response = await respondToConfirmationWithSessionRecovery({
         ma,
         session,
         confirmationId,
@@ -387,7 +415,11 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         accept: true
       });
 
-      if (!success) {
+      if (response.refreshed && response.session) {
+        await storeSession(accountId, response.session, account.password_hash, account.user_id);
+      }
+
+      if (!response.success) {
         return reply.code(400).send({ message: 'Steam rejected confirmation' });
       }
 
@@ -435,7 +467,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ message: 'Nonce is required for rejection' });
       }
 
-      const success = await respondToConfirmation({
+      const response = await respondToConfirmationWithSessionRecovery({
         ma,
         session,
         confirmationId,
@@ -443,7 +475,11 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         accept: false
       });
 
-      if (!success) {
+      if (response.refreshed && response.session) {
+        await storeSession(accountId, response.session, account.password_hash, account.user_id);
+      }
+
+      if (!response.success) {
         return reply.code(400).send({ message: 'Steam rejected operation' });
       }
 
@@ -491,7 +527,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ message: 'Nonce is required for confirmation' });
       }
 
-      const success = await respondToConfirmation({
+      const response = await respondToConfirmationWithSessionRecovery({
         ma,
         session,
         confirmationId,
@@ -499,7 +535,11 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         accept: true
       });
 
-      if (!success) {
+      if (response.refreshed && response.session) {
+        await storeSession(accountId, response.session, account.password_hash, account.user_id);
+      }
+
+      if (!response.success) {
         return reply.code(400).send({ message: 'Steam rejected confirmation' });
       }
 
@@ -547,7 +587,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ message: 'Nonce is required for rejection' });
       }
 
-      const success = await respondToConfirmation({
+      const response = await respondToConfirmationWithSessionRecovery({
         ma,
         session,
         confirmationId,
@@ -555,7 +595,11 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         accept: false
       });
 
-      if (!success) {
+      if (response.refreshed && response.session) {
+        await storeSession(accountId, response.session, account.password_hash, account.user_id);
+      }
+
+      if (!response.success) {
         return reply.code(400).send({ message: 'Steam rejected operation' });
       }
 

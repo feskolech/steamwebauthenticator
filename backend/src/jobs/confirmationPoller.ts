@@ -2,9 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { env } from '../config/env';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
-import { decodeAccountSession } from '../utils/accountSession';
+import { decodeAccountSession, encodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
-import { generateSteamCode, listConfirmations, respondToConfirmation } from '../services/steamService';
+import {
+  generateSteamCode,
+  listConfirmationsWithSessionRecovery,
+  respondToConfirmationWithSessionRecovery
+} from '../services/steamService';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 
@@ -170,7 +174,18 @@ async function runCycle(app: FastifyInstance): Promise<void> {
         const session = sessions[0]
           ? decodeAccountSession(sessions[0].session_json, account.password_hash, Number(account.user_id))
           : null;
-        const confirmations = await listConfirmations(ma, session);
+        const confirmationResult = await listConfirmationsWithSessionRecovery(ma, session);
+        const confirmations = confirmationResult.confirmations;
+        const nextSession = confirmationResult.session;
+
+        if (confirmationResult.refreshed && nextSession) {
+          await execute(
+            `INSERT INTO account_sessions (account_id, session_json)
+             VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+            [account.id, encodeAccountSession(nextSession, account.password_hash, Number(account.user_id))]
+          );
+        }
         const byKind: Record<'trade' | 'login' | 'other', Set<string>> = {
           trade: new Set(),
           login: new Set(),
@@ -288,15 +303,24 @@ async function runCycle(app: FastifyInstance): Promise<void> {
               continue;
             }
 
-            const ok = await respondToConfirmation({
+            const response = await respondToConfirmationWithSessionRecovery({
               ma,
-              session,
+              session: nextSession,
               confirmationId: confirmation.id,
               nonce: cache.nonce || confirmation.nonce,
               accept: true
             });
 
-            if (!ok) {
+            if (response.refreshed && response.session) {
+              await execute(
+                `INSERT INTO account_sessions (account_id, session_json)
+                 VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+                [account.id, encodeAccountSession(response.session, account.password_hash, Number(account.user_id))]
+              );
+            }
+
+            if (!response.success) {
               continue;
             }
 

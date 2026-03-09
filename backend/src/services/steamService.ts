@@ -2,6 +2,8 @@ import { createHmac } from 'crypto';
 import axios from 'axios';
 import SteamTotp from 'steam-totp';
 import type { MaFile, SteamSessionState } from '../utils/mafile';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { LoginSession } = require('steam-session');
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { HttpClient } = require('steam-session/node_modules/@doctormckay/stdlib/http');
@@ -14,6 +16,7 @@ const EAuthTokenPlatformType = require('steam-session/dist/enums-steam/EAuthToke
 
 const AUTH_SESSION_ID_PREFIX = 'auth:';
 const AUTH_SESSION_NONCE_PREFIX = 'authsession:';
+const SESSION_REFRESH_SKEW_SEC = 60;
 
 export type SteamConfirmation = {
   id: string;
@@ -63,6 +66,40 @@ function accessTokenFromCookieToken(value: string | undefined): string | undefin
   return token.split('.').length >= 2 ? token : undefined;
 }
 
+function parseCookieValue(cookies: string[], name: string): string | undefined {
+  const normalizedName = `${name}=`;
+  for (const cookie of cookies) {
+    const firstPart = cookie.split(';')[0]?.trim();
+    if (!firstPart || !firstPart.startsWith(normalizedName)) {
+      continue;
+    }
+    return decodeURIComponent(firstPart.slice(normalizedName.length));
+  }
+  return undefined;
+}
+
+function tokenExp(token: string | undefined): number | null {
+  if (!token || token.split('.').length < 2) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return typeof payload?.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenIsExpiredSoon(token: string | undefined, skewSec = SESSION_REFRESH_SKEW_SEC): boolean {
+  const exp = tokenExp(token);
+  if (!exp) {
+    return false;
+  }
+
+  return exp <= Math.floor(Date.now() / 1000) + skewSec;
+}
+
 function resolveSteamId(ma: MaFile, session: SteamSessionState | null): string {
   const sessionTokenId =
     steamIdFromJwt(session?.oauthToken) ?? steamIdFromCookieToken(session?.steamLoginSecure);
@@ -87,6 +124,10 @@ function resolveAccessToken(ma: MaFile, session: SteamSessionState | null): stri
   );
 }
 
+function resolveRefreshToken(ma: MaFile, session: SteamSessionState | null): string | undefined {
+  return session?.refreshToken ?? ma.Session?.RefreshToken;
+}
+
 function buildCookieHeader(session: SteamSessionState | null, steamid: string): string {
   const parts: string[] = [
     `steamid=${steamid}`,
@@ -103,6 +144,31 @@ function buildCookieHeader(session: SteamSessionState | null, steamid: string): 
   }
 
   return parts.join('; ');
+}
+
+function shouldAttemptSessionRefresh(ma: MaFile, session: SteamSessionState | null): boolean {
+  const refreshToken = resolveRefreshToken(ma, session);
+  if (!refreshToken) {
+    return false;
+  }
+
+  const accessToken = resolveAccessToken(ma, session);
+  if (!session?.steamLoginSecure || !session?.sessionid) {
+    return true;
+  }
+
+  return tokenIsExpiredSoon(accessToken) || tokenIsExpiredSoon(session.steamLoginSecure);
+}
+
+function isSteamSessionExpiredError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('steam session expired') ||
+    normalized.includes('missing access token') ||
+    normalized.includes('accessdenied') ||
+    normalized.includes('invalid token')
+  );
 }
 
 function normalizeLegacyKind(rawItem: any): 'trade' | 'login' | 'other' {
@@ -198,6 +264,38 @@ function createAuthSessionSummary(info: any): string {
   }
 
   return parts.join(' | ');
+}
+
+async function refreshSteamSession(
+  ma: MaFile,
+  session: SteamSessionState | null
+): Promise<SteamSessionState> {
+  const refreshToken = resolveRefreshToken(ma, session);
+  if (!refreshToken) {
+    throw new Error('Steam session expired. Open account details and update session.');
+  }
+
+  const loginSession = new LoginSession(EAuthTokenPlatformType.MobileApp);
+  loginSession.refreshToken = refreshToken;
+  await loginSession.renewRefreshToken();
+
+  const cookies = await loginSession.getWebCookies();
+  const steamid =
+    loginSession.steamID?.getSteamID64?.() ?? resolveSteamId(ma, session);
+  const steamLoginSecure = parseCookieValue(cookies, 'steamLoginSecure') ?? session?.steamLoginSecure;
+  const sessionid = parseCookieValue(cookies, 'sessionid') ?? session?.sessionid;
+
+  if (!steamLoginSecure || !sessionid) {
+    throw new Error('Steam session refresh failed to return web cookies.');
+  }
+
+  return {
+    steamid,
+    steamLoginSecure,
+    sessionid,
+    oauthToken: loginSession.accessToken ?? accessTokenFromCookieToken(steamLoginSecure) ?? session?.oauthToken,
+    refreshToken: loginSession.refreshToken ?? refreshToken
+  };
 }
 
 async function mobileConfRequest<T>(params: {
@@ -445,6 +543,32 @@ export async function listConfirmations(
   return Array.from(merged.values());
 }
 
+export async function listConfirmationsWithSessionRecovery(
+  ma: MaFile,
+  session: SteamSessionState | null
+): Promise<{ confirmations: SteamConfirmation[]; session: SteamSessionState | null; refreshed: boolean }> {
+  let nextSession = session;
+  let refreshed = false;
+
+  if (shouldAttemptSessionRefresh(ma, session)) {
+    nextSession = await refreshSteamSession(ma, session);
+    refreshed = true;
+  }
+
+  try {
+    const confirmations = await listConfirmations(ma, nextSession);
+    return { confirmations, session: nextSession, refreshed };
+  } catch (error) {
+    if (refreshed || !isSteamSessionExpiredError(error) || !resolveRefreshToken(ma, nextSession)) {
+      throw error;
+    }
+
+    nextSession = await refreshSteamSession(ma, nextSession);
+    const confirmations = await listConfirmations(ma, nextSession);
+    return { confirmations, session: nextSession, refreshed: true };
+  }
+}
+
 export async function respondToConfirmation(params: {
   ma: MaFile;
   session: SteamSessionState | null;
@@ -470,4 +594,39 @@ export async function respondToConfirmation(params: {
   });
 
   return Boolean(response.success);
+}
+
+export async function respondToConfirmationWithSessionRecovery(params: {
+  ma: MaFile;
+  session: SteamSessionState | null;
+  confirmationId: string;
+  nonce: string;
+  accept: boolean;
+}): Promise<{ success: boolean; session: SteamSessionState | null; refreshed: boolean }> {
+  let nextSession = params.session;
+  let refreshed = false;
+
+  if (shouldAttemptSessionRefresh(params.ma, params.session)) {
+    nextSession = await refreshSteamSession(params.ma, params.session);
+    refreshed = true;
+  }
+
+  try {
+    const success = await respondToConfirmation({
+      ...params,
+      session: nextSession
+    });
+    return { success, session: nextSession, refreshed };
+  } catch (error) {
+    if (refreshed || !isSteamSessionExpiredError(error) || !resolveRefreshToken(params.ma, nextSession)) {
+      throw error;
+    }
+
+    nextSession = await refreshSteamSession(params.ma, nextSession);
+    const success = await respondToConfirmation({
+      ...params,
+      session: nextSession
+    });
+    return { success, session: nextSession, refreshed: true };
+  }
 }

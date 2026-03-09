@@ -22,7 +22,8 @@ const maSchema = z.object({
       SteamLoginSecure: optionalString,
       SessionID: optionalString,
       OAuthToken: optionalString,
-      AccessToken: optionalString
+      AccessToken: optionalString,
+      RefreshToken: optionalString
     })
     .passthrough()
     .optional()
@@ -35,6 +36,7 @@ export type SteamSessionState = {
   steamLoginSecure?: string;
   sessionid?: string;
   oauthToken?: string;
+  refreshToken?: string;
 };
 
 function extractSteamIdFromCookieToken(value: string | undefined): string | undefined {
@@ -103,8 +105,9 @@ export function extractSessionFromMa(ma: MaFile): SteamSessionState | null {
   const steamLoginSecure = session?.SteamLoginSecure;
   const sessionid = session?.SessionID;
   const oauthToken = session?.OAuthToken ?? session?.AccessToken;
+  const refreshToken = session?.RefreshToken;
 
-  if (!steamid && !steamLoginSecure && !sessionid && !oauthToken) {
+  if (!steamid && !steamLoginSecure && !sessionid && !oauthToken && !refreshToken) {
     return null;
   }
 
@@ -112,6 +115,7 @@ export function extractSessionFromMa(ma: MaFile): SteamSessionState | null {
     steamid,
     steamLoginSecure,
     sessionid,
-    oauthToken
+    oauthToken,
+    refreshToken
   };
 }

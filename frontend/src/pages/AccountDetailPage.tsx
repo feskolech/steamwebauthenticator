@@ -17,6 +17,10 @@ export function AccountDetailPage() {
   const [steamLoginSecure, setSteamLoginSecure] = useState('');
   const [sessionid, setSessionid] = useState('');
   const [oauthToken, setOauthToken] = useState('');
+  const [refreshToken, setRefreshToken] = useState('');
+  const [steamPassword, setSteamPassword] = useState('');
+  const [guardCode, setGuardCode] = useState('');
+  const [reconnectBusy, setReconnectBusy] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -147,11 +151,16 @@ export function AccountDetailPage() {
             value={oauthToken}
             onChange={(event) => setOauthToken(event.target.value)}
           />
+          <Input
+            placeholder={t('accountDetail.refreshToken')}
+            value={refreshToken}
+            onChange={(event) => setRefreshToken(event.target.value)}
+          />
           <Button
             onClick={() => {
               void (async () => {
                 try {
-                  await accountApi.setSession(accountId, { steamLoginSecure, sessionid, oauthToken });
+                  await accountApi.setSession(accountId, { steamLoginSecure, sessionid, oauthToken, refreshToken });
                   setMessage(t('accountDetail.sessionSaved'));
                 } catch {
                   setMessage(t('accountDetail.sessionSaveFailed'));
@@ -162,6 +171,50 @@ export function AccountDetailPage() {
             {t('accountDetail.saveSession')}
           </Button>
           {message && <div className="text-sm text-base-500">{message}</div>}
+        </div>
+      </Card>
+
+      <Card>
+        <h2 className="mb-3 text-base font-semibold">{t('accountDetail.reconnectTitle')}</h2>
+        <div className="mb-3 text-sm text-base-500">
+          {t('accountDetail.reconnectDescription', { accountName: account.accountName })}
+        </div>
+        <div className="space-y-2">
+          <Input
+            type="password"
+            placeholder={t('accountDetail.reconnectPassword')}
+            value={steamPassword}
+            onChange={(event) => setSteamPassword(event.target.value)}
+          />
+          <Input
+            placeholder={t('accountDetail.reconnectGuardCode')}
+            value={guardCode}
+            onChange={(event) => setGuardCode(event.target.value)}
+          />
+          <Button
+            disabled={reconnectBusy || !steamPassword.trim()}
+            onClick={() => {
+              void (async () => {
+                setReconnectBusy(true);
+                try {
+                  const response = await accountApi.reconnect(accountId, {
+                    password: steamPassword,
+                    guardCode: guardCode.trim() || undefined
+                  });
+                  setSteamPassword('');
+                  setGuardCode('');
+                  setMessage(t('accountDetail.reconnectSuccess', { steamid: response.steamid }));
+                  await load();
+                } catch (error: any) {
+                  setMessage(error?.response?.data?.message || error?.message || t('accountDetail.reconnectFailed'));
+                } finally {
+                  setReconnectBusy(false);
+                }
+              })();
+            }}
+          >
+            {reconnectBusy ? t('auth.pleaseWait') : t('accountDetail.reconnectButton')}
+          </Button>
         </div>
       </Card>
 

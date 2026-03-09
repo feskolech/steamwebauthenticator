@@ -91,18 +91,22 @@ function parseCookieValue(cookies: string[], name: string): string | undefined {
 function buildSessionFromCookies(
   steamid: string,
   sessionid: string,
-  cookies: string[]
+  cookies: string[],
+  refreshToken?: string | null
 ): SteamSessionState | null {
   const steamLoginSecure = parseCookieValue(cookies, 'steamLoginSecure');
+  const cookieAccessToken = steamLoginSecure?.split('||')[1];
 
-  if (!steamid && !steamLoginSecure && !sessionid) {
+  if (!steamid && !steamLoginSecure && !sessionid && !refreshToken) {
     return null;
   }
 
   return {
     steamid,
     steamLoginSecure,
-    sessionid
+    sessionid,
+    oauthToken: cookieAccessToken,
+    refreshToken: refreshToken ?? undefined
   };
 }
 
@@ -124,6 +128,7 @@ async function loginToSteam(params: {
   accountName: string;
   password: string;
   guardCode?: string;
+  totpCodeProvider?: (() => string | null | undefined) | null;
 }): Promise<{ client: any; steamid: string; session: SteamSessionState | null }> {
   const client = new (SteamUser as any)({
     autoRelogin: false,
@@ -138,6 +143,8 @@ async function loginToSteam(params: {
       let steamid: string | null = null;
       let pendingSessionId: string | null = null;
       let pendingCookies: string[] | null = null;
+      let latestRefreshToken: string | null = null;
+      let guardAttempts = 0;
 
       const timeout = setTimeout(() => {
         fail(new Error('Steam login timed out'));
@@ -147,6 +154,7 @@ async function loginToSteam(params: {
         clearTimeout(timeout);
         client.removeListener('loggedOn', onLoggedOn);
         client.removeListener('webSession', onWebSession);
+        client.removeListener('refreshToken', onRefreshToken);
         client.removeListener('steamGuard', onSteamGuard);
         client.removeListener('error', onError);
         client.removeListener('disconnected', onDisconnected);
@@ -167,7 +175,7 @@ async function loginToSteam(params: {
           return;
         }
 
-        const session = buildSessionFromCookies(steamid, pendingSessionId, pendingCookies);
+        const session = buildSessionFromCookies(steamid, pendingSessionId, pendingCookies, latestRefreshToken);
         if (!session) {
           fail(new Error('Steam login succeeded, but required web session cookies are unavailable'));
           return;
@@ -211,8 +219,16 @@ async function loginToSteam(params: {
         tryComplete();
       };
 
+      const onRefreshToken = (refreshToken: string) => {
+        latestRefreshToken = refreshToken;
+      };
+
       const onSteamGuard = (domain: string | null, callback: (code: string) => void, lastCodeWrong: boolean) => {
-        if (!guardCode) {
+        const isEmailCode = Boolean(domain);
+        const autoTotpCode = !isEmailCode ? params.totpCodeProvider?.()?.trim() : undefined;
+        const codeToUse = isEmailCode ? guardCode : autoTotpCode ?? guardCode;
+
+        if (!codeToUse) {
           fail(
             new SteamEnrollmentError({
               code: 'STEAM_GUARD_REQUIRED',
@@ -224,7 +240,7 @@ async function loginToSteam(params: {
           return;
         }
 
-        if (lastCodeWrong || guardSubmitted) {
+        if (lastCodeWrong || guardSubmitted || guardAttempts > 0) {
           fail(
             new SteamEnrollmentError({
               code: 'STEAM_GUARD_INVALID',
@@ -234,8 +250,9 @@ async function loginToSteam(params: {
           return;
         }
 
+        guardAttempts += 1;
         guardSubmitted = true;
-        callback(guardCode);
+        callback(codeToUse);
       };
 
       const onError = (error: any) => {
@@ -251,6 +268,7 @@ async function loginToSteam(params: {
 
       client.once('loggedOn', onLoggedOn);
       client.once('webSession', onWebSession);
+      client.on('refreshToken', onRefreshToken);
       client.on('steamGuard', onSteamGuard);
       client.once('error', onError);
       client.once('disconnected', onDisconnected);
@@ -261,6 +279,28 @@ async function loginToSteam(params: {
       });
     }
   );
+}
+
+export async function refreshSteamLoginSession(params: {
+  accountName: string;
+  password: string;
+  guardCode?: string;
+  totpCodeProvider?: (() => string | null | undefined) | null;
+}): Promise<{ steamid: string; session: SteamSessionState }> {
+  const { client, steamid, session } = await loginToSteam(params);
+
+  try {
+    if (!session) {
+      throw new Error('Steam login succeeded, but session cookies are unavailable');
+    }
+
+    return {
+      steamid,
+      session
+    };
+  } finally {
+    closeClient(client);
+  }
 }
 
 async function addAuthenticator(client: any): Promise<AddAuthenticatorResponse> {
@@ -442,7 +482,8 @@ export async function finishSteamEnrollment(params: {
           SteamID: session.steamid,
           SteamLoginSecure: session.steamLoginSecure,
           SessionID: session.sessionid,
-          OAuthToken: session.oauthToken
+          OAuthToken: session.oauthToken,
+          RefreshToken: session.refreshToken
         }
       : undefined
   };

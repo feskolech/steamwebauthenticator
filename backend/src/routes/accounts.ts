@@ -7,6 +7,7 @@ import { generateSteamCode } from '../services/steamService';
 import { guardWriteByIp } from '../middleware/rateLimiters';
 import {
   finishSteamEnrollment,
+  refreshSteamLoginSession,
   startSteamEnrollment,
   SteamEnrollmentError
 } from '../services/steamEnrollmentService';
@@ -474,7 +475,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{
     Params: { accountId: string };
-    Body: { steamLoginSecure?: string; sessionid?: string; oauthToken?: string; steamid?: string };
+    Body: { steamLoginSecure?: string; sessionid?: string; oauthToken?: string; refreshToken?: string; steamid?: string };
   }>('/api/accounts/:accountId/session', { preHandler: app.authenticate }, async (request, reply) => {
     const accountId = Number(request.params.accountId);
     const user = await getUserSecret(request.user.id);
@@ -485,11 +486,17 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ message: error.message });
     }
 
+    const cookieTokenPart =
+      request.body.steamLoginSecure && request.body.steamLoginSecure.includes('||')
+        ? request.body.steamLoginSecure.split('||')[1]
+        : undefined;
+
     const session = {
       steamid: request.body.steamid,
       steamLoginSecure: request.body.steamLoginSecure,
       sessionid: request.body.sessionid,
-      oauthToken: request.body.oauthToken
+      oauthToken: request.body.oauthToken ?? cookieTokenPart,
+      refreshToken: request.body.refreshToken
     };
 
     await execute(
@@ -505,6 +512,101 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     );
 
     return { success: true };
+  });
+
+  app.post<{
+    Params: { accountId: string };
+    Body: { password?: string; guardCode?: string };
+  }>('/api/accounts/:accountId/reconnect', { preHandler: app.authenticate }, async (request, reply) => {
+    try {
+      await guardWriteByIp(request.ip);
+    } catch (error: any) {
+      return reply.code(429).send({ message: error.message });
+    }
+
+    const accountId = Number(request.params.accountId);
+    const password = request.body.password;
+    const guardCode = request.body.guardCode?.trim();
+    const user = await getUserSecret(request.user.id);
+
+    if (!password) {
+      return reply.code(400).send({ message: 'Steam password is required' });
+    }
+
+    let account: AccountRow;
+    try {
+      account = await getAccountByOwner(request.user.id, accountId);
+    } catch (error: any) {
+      return reply.code(404).send({ message: error.message });
+    }
+
+    try {
+      const ma = parseMaFile(decryptForUser(account.encrypted_ma, user.password_hash, user.id));
+      const { steamid, session } = await refreshSteamLoginSession({
+        accountName: account.account_name,
+        password,
+        guardCode,
+        totpCodeProvider: () => generateSteamCode(ma.shared_secret)
+      });
+
+      ma.Session = {
+        ...(ma.Session ?? {}),
+        SteamID: session.steamid ?? steamid,
+        SteamLoginSecure: session.steamLoginSecure,
+        SessionID: session.sessionid,
+        OAuthToken: session.oauthToken,
+        RefreshToken: session.refreshToken
+      };
+
+      await execute(
+        `UPDATE user_accounts
+         SET steamid = ?, encrypted_ma = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          steamid,
+          encryptForUser(JSON.stringify(ma), user.password_hash, user.id),
+          accountId,
+          request.user.id
+        ]
+      );
+
+      await execute(
+        `INSERT INTO account_sessions (account_id, session_json)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+        [accountId, encodeAccountSession(session, user.password_hash, user.id)]
+      );
+
+      await execute(
+        "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_updated'))",
+        [request.user.id, accountId]
+      );
+
+      return {
+        success: true,
+        steamid
+      };
+    } catch (error: any) {
+      if (error instanceof SteamEnrollmentError) {
+        if (error.code === 'STEAM_GUARD_REQUIRED') {
+          return reply.code(428).send({
+            code: error.code,
+            guardType: error.guardType,
+            guardDomain: error.guardDomain ?? null,
+            message: error.message
+          });
+        }
+
+        if (error.code === 'STEAM_GUARD_INVALID') {
+          return reply.code(400).send({
+            code: error.code,
+            message: error.message
+          });
+        }
+      }
+
+      return reply.code(400).send({ message: error.message || 'Failed to refresh Steam session' });
+    }
   });
 
   app.get<{ Params: { accountId: string } }>(

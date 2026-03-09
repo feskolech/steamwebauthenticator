@@ -105,8 +105,12 @@ export const accountApi = {
     }>('/api/accounts/enroll/finish', payload),
   getRecoveryCode: (accountId: number) =>
     apiClient.get<{ recoveryCode: string }>(`/api/accounts/${accountId}/recovery-code`),
-  setSession: (accountId: number, data: Record<string, string>) =>
-    apiClient.post<{ success: boolean }>(`/api/accounts/${accountId}/session`, data)
+  setSession: (
+    accountId: number,
+    data: { steamLoginSecure?: string; sessionid?: string; oauthToken?: string; refreshToken?: string; steamid?: string }
+  ) => apiClient.post<{ success: boolean }>(`/api/accounts/${accountId}/session`, data),
+  reconnect: (accountId: number, payload: { password: string; guardCode?: string }) =>
+    apiClient.post<{ success: boolean; steamid: string }>(`/api/accounts/${accountId}/reconnect`, payload)
 };
 
 export const steamApi = {
