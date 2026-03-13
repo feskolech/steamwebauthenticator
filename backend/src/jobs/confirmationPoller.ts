@@ -22,6 +22,24 @@ function resolveCodeTtlSec(nowSec: number): number {
   return 30 - (nowSec % 30) || 30;
 }
 
+function confirmationInlineKeyboard(kind: 'trade' | 'login', cacheId: number) {
+  if (kind === 'trade') {
+    return [
+      [
+        { text: 'Подтвердить', callbackData: `sgl:a:${cacheId}` },
+        { text: 'Отклонить', callbackData: `sgl:r:${cacheId}` }
+      ]
+    ];
+  }
+
+  return [
+    [
+      { text: 'Впустить', callbackData: `sgl:a:${cacheId}` },
+      { text: 'Не впускать', callbackData: `sgl:r:${cacheId}` }
+    ]
+  ];
+}
+
 function formatLoginAlertMessage(params: {
   alias: string;
   steamid: string;
@@ -248,14 +266,9 @@ async function runCycle(app: FastifyInstance): Promise<void> {
                 await sendTelegramMessage(
                   account.telegram_user_id,
                   `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`,
-                  kind === 'login'
+                  kind === 'trade' || kind === 'login'
                     ? {
-                        inlineKeyboard: [
-                          [
-                            { text: 'Впустить', callbackData: `sgl:a:${Number(inserted.insertId)}` },
-                            { text: 'Не впускать', callbackData: `sgl:r:${Number(inserted.insertId)}` }
-                          ]
-                        ]
+                        inlineKeyboard: confirmationInlineKeyboard(kind, Number(inserted.insertId))
                       }
                     : undefined
                 );

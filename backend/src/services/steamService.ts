@@ -172,17 +172,29 @@ function isSteamSessionExpiredError(error: unknown): boolean {
 }
 
 function normalizeLegacyKind(rawItem: any): 'trade' | 'login' | 'other' {
+  const clue = `${rawItem?.type_name ?? ''} ${rawItem?.headline ?? ''}`.toLowerCase();
   const rawType = Number(rawItem?.type ?? 0);
   if (rawType === 2) {
     return 'trade';
   }
   if (rawType === 3) {
+    if (clue.includes('sign in') || clue.includes('signin') || clue.includes('login')) {
+      return 'login';
+    }
+    return 'trade';
+  }
+
+  if (clue.includes('sign in') || clue.includes('signin') || clue.includes('login')) {
     return 'login';
   }
 
-  const clue = `${rawItem?.type_name ?? ''} ${rawItem?.headline ?? ''}`.toLowerCase();
-  if (clue.includes('sign in') || clue.includes('signin') || clue.includes('login')) {
-    return 'login';
+  if (
+    clue.includes('selling for') ||
+    clue.includes('listed for') ||
+    clue.includes('trade') ||
+    clue.includes('market')
+  ) {
+    return 'trade';
   }
 
   return 'other';
