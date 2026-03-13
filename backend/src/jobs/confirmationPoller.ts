@@ -9,6 +9,13 @@ import {
   listConfirmationsWithSessionRecovery,
   respondToConfirmationWithSessionRecovery
 } from '../services/steamService';
+import {
+  telegramConfirmationInlineKeyboard,
+  telegramLoginCodeAlert,
+  telegramNewConfirmationText,
+  telegramNextCodeIn,
+  telegramNextSteamCode
+} from '../services/telegramCopy';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 
@@ -22,48 +29,9 @@ function resolveCodeTtlSec(nowSec: number): number {
   return 30 - (nowSec % 30) || 30;
 }
 
-function confirmationInlineKeyboard(kind: 'trade' | 'login', cacheId: number) {
-  if (kind === 'trade') {
-    return [
-      [
-        { text: 'Подтвердить', callbackData: `sgl:a:${cacheId}` },
-        { text: 'Отклонить', callbackData: `sgl:r:${cacheId}` }
-      ]
-    ];
-  }
-
-  return [
-    [
-      { text: 'Впустить', callbackData: `sgl:a:${cacheId}` },
-      { text: 'Не впускать', callbackData: `sgl:r:${cacheId}` }
-    ]
-  ];
-}
-
-function formatLoginAlertMessage(params: {
-  alias: string;
-  steamid: string;
-  confirmationId: string;
-  headline: string;
-  summary: string;
-  code: string;
-  validForSec: number;
-}): string {
-  return [
-    'Steam login confirmation requested',
-    `Account: ${params.alias}`,
-    `SteamID: ${params.steamid}`,
-    `Confirmation ID: ${params.confirmationId}`,
-    params.headline ? `Title: ${params.headline}` : '',
-    params.summary ? `Details: ${params.summary}` : '',
-    `Steam Guard code: ${params.code} (expires in ${params.validForSec}s)`
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
 async function sendLoginCodeAlert(params: {
   telegramUserId: string | number;
+  language: string | null | undefined;
   cacheId: number;
   alias: string;
   steamid: string;
@@ -79,7 +47,7 @@ async function sendLoginCodeAlert(params: {
   if (ttlSec < 15) {
     await sendTelegramMessage(
       params.telegramUserId,
-      `${formatLoginAlertMessage({
+      `${telegramLoginCodeAlert(params.language, {
         alias: params.alias,
         steamid: params.steamid,
         confirmationId: params.confirmationId,
@@ -87,21 +55,16 @@ async function sendLoginCodeAlert(params: {
         summary: params.summary,
         code: currentCode,
         validForSec: ttlSec
-      })}\nNext code will be sent in ${ttlSec}s.`,
+      })}\n${telegramNextCodeIn(params.language, ttlSec)}`,
       {
-        inlineKeyboard: [
-          [
-            { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
-            { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
-          ]
-        ]
+        inlineKeyboard: telegramConfirmationInlineKeyboard(params.language, 'login', params.cacheId)
       }
     );
 
     const timeout = setTimeout(() => {
       void sendTelegramMessage(
         params.telegramUserId,
-        `Next Steam Guard code for ${params.alias}: ${generateSteamCode(params.sharedSecret)}`
+        telegramNextSteamCode(params.language, params.alias, generateSteamCode(params.sharedSecret))
       );
     }, (ttlSec + 1) * 1000);
 
@@ -111,7 +74,7 @@ async function sendLoginCodeAlert(params: {
 
   await sendTelegramMessage(
     params.telegramUserId,
-    formatLoginAlertMessage({
+    telegramLoginCodeAlert(params.language, {
       alias: params.alias,
       steamid: params.steamid,
       confirmationId: params.confirmationId,
@@ -121,12 +84,7 @@ async function sendLoginCodeAlert(params: {
       validForSec: ttlSec
     }),
     {
-      inlineKeyboard: [
-        [
-          { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
-          { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
-        ]
-      ]
+      inlineKeyboard: telegramConfirmationInlineKeyboard(params.language, 'login', params.cacheId)
     }
   );
 }
@@ -172,7 +130,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
   try {
     const accounts = await queryRows<any[]>(
       `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm_trades, a.auto_confirm_logins, a.auto_confirm_delay_sec,
-              u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes
+              u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes, u.language
        FROM user_accounts a
        JOIN users u ON u.id = a.user_id
        WHERE a.auto_confirm_trades = TRUE OR a.auto_confirm_logins = TRUE OR u.telegram_user_id IS NOT NULL`
@@ -254,6 +212,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
                 const steamid = ma.steamid ?? ma.Session?.SteamID ?? 'unknown';
                 await sendLoginCodeAlert({
                   telegramUserId: account.telegram_user_id,
+                  language: account.language,
                   cacheId: Number(inserted.insertId),
                   alias: account.alias,
                   steamid,
@@ -263,12 +222,19 @@ async function runCycle(app: FastifyInstance): Promise<void> {
                   sharedSecret: ma.shared_secret
                 });
               } else {
+                const telegramKind = kind === 'trade' || kind === 'login' ? kind : null;
                 await sendTelegramMessage(
                   account.telegram_user_id,
-                  `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`,
-                  kind === 'trade' || kind === 'login'
+                  telegramKind
+                    ? telegramNewConfirmationText(account.language, telegramKind, account.alias, confirmation.headline)
+                    : `New ${kind} confirmation for ${account.alias}: ${confirmation.headline}`,
+                  telegramKind
                     ? {
-                        inlineKeyboard: confirmationInlineKeyboard(kind, Number(inserted.insertId))
+                        inlineKeyboard: telegramConfirmationInlineKeyboard(
+                          account.language,
+                          telegramKind,
+                          Number(inserted.insertId)
+                        )
                       }
                     : undefined
                 );

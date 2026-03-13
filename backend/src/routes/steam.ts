@@ -8,6 +8,13 @@ import {
   listConfirmationsWithSessionRecovery,
   respondToConfirmationWithSessionRecovery
 } from '../services/steamService';
+import {
+  telegramConfirmationInlineKeyboard,
+  telegramLoginCodeAlert,
+  telegramNewConfirmationText,
+  telegramNextCodeIn,
+  telegramNextSteamCode
+} from '../services/telegramCopy';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 
@@ -19,6 +26,7 @@ type AccountBundle = {
   password_hash: string;
   telegram_user_id: string | null;
   telegram_notify_login_codes: number;
+  language: string;
 };
 
 const STALE_PENDING_RECONCILE_MINUTES = 2;
@@ -26,7 +34,7 @@ const STALE_PENDING_TTL_MINUTES = 30;
 
 async function getAccountBundle(userId: number, accountId: number): Promise<AccountBundle> {
   const rows = await queryRows<AccountBundle[]>(
-    `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes
+    `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes, u.language
      FROM user_accounts a
      JOIN users u ON u.id = a.user_id
      WHERE a.id = ? AND a.user_id = ?
@@ -46,30 +54,9 @@ function resolveCodeTtlSec(nowSec: number): number {
   return 30 - (nowSec % 30) || 30;
 }
 
-function formatLoginAlertMessage(params: {
-  alias: string;
-  steamid: string;
-  confirmationId: string;
-  headline: string;
-  summary: string;
-  code: string;
-  validForSec: number;
-}): string {
-  return [
-    'Steam login confirmation requested',
-    `Account: ${params.alias}`,
-    `SteamID: ${params.steamid}`,
-    `Confirmation ID: ${params.confirmationId}`,
-    params.headline ? `Title: ${params.headline}` : '',
-    params.summary ? `Details: ${params.summary}` : '',
-    `Steam Guard code: ${params.code} (expires in ${params.validForSec}s)`
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
 async function sendLoginCodeAlert(params: {
   telegramUserId: string | number;
+  language: string | null | undefined;
   cacheId: number;
   alias: string;
   steamid: string;
@@ -85,7 +72,7 @@ async function sendLoginCodeAlert(params: {
   if (ttlSec < 15) {
     await sendTelegramMessage(
       params.telegramUserId,
-      `${formatLoginAlertMessage({
+      `${telegramLoginCodeAlert(params.language, {
         alias: params.alias,
         steamid: params.steamid,
         confirmationId: params.confirmationId,
@@ -93,21 +80,16 @@ async function sendLoginCodeAlert(params: {
         summary: params.summary,
         code: currentCode,
         validForSec: ttlSec
-      })}\nNext code will be sent in ${ttlSec}s.`,
+      })}\n${telegramNextCodeIn(params.language, ttlSec)}`,
       {
-        inlineKeyboard: [
-          [
-            { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
-            { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
-          ]
-        ]
+        inlineKeyboard: telegramConfirmationInlineKeyboard(params.language, 'login', params.cacheId)
       }
     );
 
     const timeout = setTimeout(() => {
       void sendTelegramMessage(
         params.telegramUserId,
-        `Next Steam Guard code for ${params.alias}: ${generateSteamCode(params.sharedSecret)}`
+        telegramNextSteamCode(params.language, params.alias, generateSteamCode(params.sharedSecret))
       );
     }, (ttlSec + 1) * 1000);
     timeout.unref();
@@ -116,7 +98,7 @@ async function sendLoginCodeAlert(params: {
 
   await sendTelegramMessage(
     params.telegramUserId,
-    formatLoginAlertMessage({
+    telegramLoginCodeAlert(params.language, {
       alias: params.alias,
       steamid: params.steamid,
       confirmationId: params.confirmationId,
@@ -126,12 +108,7 @@ async function sendLoginCodeAlert(params: {
       validForSec: ttlSec
     }),
     {
-      inlineKeyboard: [
-        [
-          { text: 'Впустить', callbackData: `sgl:a:${params.cacheId}` },
-          { text: 'Не впускать', callbackData: `sgl:r:${params.cacheId}` }
-        ]
-      ]
+      inlineKeyboard: telegramConfirmationInlineKeyboard(params.language, 'login', params.cacheId)
     }
   );
 }
@@ -347,6 +324,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               if (account.telegram_notify_login_codes) {
                 await sendLoginCodeAlert({
                   telegramUserId: account.telegram_user_id,
+                  language: account.language,
                   cacheId: Number(inserted.insertId),
                   alias: account.alias,
                   steamid: ma.Session?.SteamID ?? ma.steamid ?? 'unknown',
@@ -358,14 +336,13 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               } else {
                 await sendTelegramMessage(
                   account.telegram_user_id,
-                  `New login confirmation for ${account.alias}: ${conf.headline}`,
+                  telegramNewConfirmationText(account.language, 'login', account.alias, conf.headline),
                   {
-                    inlineKeyboard: [
-                      [
-                        { text: 'Впустить', callbackData: `sgl:a:${Number(inserted.insertId)}` },
-                        { text: 'Не впускать', callbackData: `sgl:r:${Number(inserted.insertId)}` }
-                      ]
-                    ]
+                    inlineKeyboard: telegramConfirmationInlineKeyboard(
+                      account.language,
+                      'login',
+                      Number(inserted.insertId)
+                    )
                   }
                 );
               }

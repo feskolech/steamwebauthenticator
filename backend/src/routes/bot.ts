@@ -43,7 +43,9 @@ const botRoutes: FastifyPluginAsync = async (app) => {
 
     await execute('UPDATE telegram_link_codes SET used_at = UTC_TIMESTAMP() WHERE id = ?', [link.id]);
 
-    return { success: true, userId: link.user_id };
+    const users = await queryRows<{ language: string }[]>('SELECT language FROM users WHERE id = ? LIMIT 1', [link.user_id]);
+
+    return { success: true, userId: link.user_id, language: users[0]?.language ?? 'en' };
   });
 
   app.post<{
@@ -66,8 +68,29 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ message: 'Code not found or expired' });
     }
 
-    return { success: true };
+    const users = await queryRows<{ language: string }[]>(
+      'SELECT language FROM users WHERE telegram_user_id = ? LIMIT 1',
+      [telegramUserId]
+    );
+
+    return { success: true, language: users[0]?.language ?? 'en' };
   });
+
+  app.get<{ Params: { telegramUserId: string } }>(
+    '/api/telegram/bot/profile/:telegramUserId',
+    { preHandler: botAuth },
+    async (request) => {
+      const users = await queryRows<{ id: number; language: string }[]>(
+        'SELECT id, language FROM users WHERE telegram_user_id = ? LIMIT 1',
+        [request.params.telegramUserId]
+      );
+
+      return {
+        linked: Boolean(users[0]),
+        language: users[0]?.language ?? 'en'
+      };
+    }
+  );
 
   app.get<{ Params: { telegramUserId: string } }>(
     '/api/telegram/bot/accounts/:telegramUserId',
@@ -160,8 +183,8 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       nonce?: string;
     };
   }>('/api/telegram/bot/confirm', { preHandler: botAuth }, async (request, reply) => {
-    const users = await queryRows<{ id: number; password_hash: string }[]>(
-      'SELECT id, password_hash FROM users WHERE telegram_user_id = ? LIMIT 1',
+    const users = await queryRows<{ id: number; password_hash: string; language: string }[]>(
+      'SELECT id, password_hash, language FROM users WHERE telegram_user_id = ? LIMIT 1',
       [request.body.telegramUserId]
     );
 
@@ -230,7 +253,7 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       [request.body.accountId, request.body.confirmationId]
     );
 
-    return { success: true };
+    return { success: true, language: user.language ?? 'en' };
   });
 
   app.post<{
@@ -240,8 +263,8 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       accept: boolean;
     };
   }>('/api/telegram/bot/respond', { preHandler: botAuth }, async (request, reply) => {
-    const users = await queryRows<{ id: number; password_hash: string }[]>(
-      'SELECT id, password_hash FROM users WHERE telegram_user_id = ? LIMIT 1',
+    const users = await queryRows<{ id: number; password_hash: string; language: string }[]>(
+      'SELECT id, password_hash, language FROM users WHERE telegram_user_id = ? LIMIT 1',
       [request.body.telegramUserId]
     );
 
@@ -338,7 +361,8 @@ const botRoutes: FastifyPluginAsync = async (app) => {
       kind: item.kind,
       accountId: item.account_id,
       confirmationId: item.confirmation_id,
-      status: nextStatus
+      status: nextStatus,
+      language: user.language ?? 'en'
     };
   });
 };

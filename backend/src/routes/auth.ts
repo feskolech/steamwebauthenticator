@@ -6,6 +6,7 @@ import { createOpaqueCode, createNumericCode, hashApiKey } from '../utils/crypto
 import { clearSessionCookie, issueSessionCookie } from '../utils/session';
 import { guardLogin2faByIp, guardLoginByIp, guardWriteByIp } from '../middleware/rateLimiters';
 import { getUserByEmail, getUserById, sanitizeUser } from '../services/userService';
+import { telegramLogin2faCode } from '../services/telegramCopy';
 import { sendTelegramMessage } from '../services/telegramService';
 import { env } from '../config/env';
 import {
@@ -125,7 +126,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
       await sendTelegramMessage(
         user.telegram_user_id,
-        `SteamGuard Web login code: ${code}. This code expires in 10 minutes.`
+        telegramLogin2faCode(user.language, code)
       );
 
       return {
