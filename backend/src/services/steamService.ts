@@ -91,6 +91,19 @@ function tokenExp(token: string | undefined): number | null {
   }
 }
 
+function tokenAudiences(token: string | undefined): string[] {
+  if (!token || token.split('.').length < 2) {
+    return [];
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return Array.isArray(payload?.aud) ? payload.aud.map((value: unknown) => String(value)) : [];
+  } catch {
+    return [];
+  }
+}
+
 function tokenIsExpiredSoon(token: string | undefined, skewSec = SESSION_REFRESH_SKEW_SEC): boolean {
   const exp = tokenExp(token);
   if (!exp) {
@@ -287,9 +300,18 @@ async function refreshSteamSession(
     throw new Error('Steam session expired. Open account details and update session.');
   }
 
-  const loginSession = new LoginSession(EAuthTokenPlatformType.MobileApp);
+  const audiences = tokenAudiences(refreshToken);
+  const isMobileRefreshToken = audiences.includes('mobile');
+  const platformType = isMobileRefreshToken
+    ? EAuthTokenPlatformType.MobileApp
+    : EAuthTokenPlatformType.WebBrowser;
+
+  const loginSession = new LoginSession(platformType);
   loginSession.refreshToken = refreshToken;
-  await loginSession.renewRefreshToken();
+
+  if (isMobileRefreshToken) {
+    await loginSession.renewRefreshToken();
+  }
 
   const cookies = await loginSession.getWebCookies();
   const steamid =
@@ -305,7 +327,10 @@ async function refreshSteamSession(
     steamid,
     steamLoginSecure,
     sessionid,
-    oauthToken: loginSession.accessToken ?? accessTokenFromCookieToken(steamLoginSecure) ?? session?.oauthToken,
+    oauthToken:
+      loginSession.accessToken ??
+      accessTokenFromCookieToken(steamLoginSecure) ??
+      session?.oauthToken,
     refreshToken: loginSession.refreshToken ?? refreshToken
   };
 }
