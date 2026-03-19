@@ -3,6 +3,7 @@ import { execute, queryRows } from '../db/pool';
 import { decryptForUser, encryptForUser } from '../utils/crypto';
 import { encodeAccountSession } from '../utils/accountSession';
 import { extractSessionFromMa, parseMaFile } from '../utils/mafile';
+import { requireSensitiveAuth } from '../utils/sensitiveAuth';
 import { generateSteamCode } from '../services/steamService';
 import { guardWriteByIp } from '../middleware/rateLimiters';
 import {
@@ -480,6 +481,10 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     const accountId = Number(request.params.accountId);
     const user = await getUserSecret(request.user.id);
 
+    if (!requireSensitiveAuth(request, reply)) {
+      return;
+    }
+
     try {
       await getAccountByOwner(request.user.id, accountId);
     } catch (error: any) {
@@ -646,6 +651,10 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const accountId = Number(request.params.accountId);
 
+      if (!requireSensitiveAuth(request, reply)) {
+        return;
+      }
+
       try {
         const account = await getAccountByOwner(request.user.id, accountId);
         const user = await getUserSecret(request.user.id);
@@ -666,6 +675,10 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: app.authenticate },
     async (request, reply) => {
       const accountId = Number(request.params.accountId);
+
+      if (!requireSensitiveAuth(request, reply)) {
+        return;
+      }
 
       try {
         const account = await getAccountByOwner(request.user.id, accountId);

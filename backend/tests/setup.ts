@@ -13,3 +13,6 @@ process.env.ENCRYPTION_KEY = 'test_encryption_1234567890';
 process.env.ADMIN_EMAIL = 'admin@admin.com';
 process.env.ADMIN_PASSWORD = 'admin123';
 process.env.STEAM_POLL_INTERVAL_SEC = '20';
+process.env.TURNSTILE_ENABLED = 'false';
+process.env.TURNSTILE_SECRET_KEY = '';
+process.env.TURNSTILE_SITE_KEY = '';

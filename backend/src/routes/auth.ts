@@ -3,11 +3,14 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { execute, queryRows } from '../db/pool';
 import { createOpaqueCode, createNumericCode, hashApiKey } from '../utils/crypto';
+import { createRegistrationChallenge, validateRegistrationChallenge } from '../utils/registrationChallenge';
 import { clearSessionCookie, issueSessionCookie } from '../utils/session';
-import { guardLogin2faByIp, guardLoginByIp, guardWriteByIp } from '../middleware/rateLimiters';
+import { clearSensitiveAuthCookie, issueSensitiveAuthCookie } from '../utils/sensitiveAuth';
+import { guardLogin2faByIp, guardLoginByIp, guardRegisterByIp, guardWriteByIp } from '../middleware/rateLimiters';
 import { getUserByEmail, getUserById, sanitizeUser } from '../services/userService';
 import { telegramLogin2faCode } from '../services/telegramCopy';
 import { sendTelegramMessage } from '../services/telegramService';
+import { verifyTurnstileToken } from '../services/turnstileService';
 import { env } from '../config/env';
 import {
   createAuthenticationOptions,
@@ -19,6 +22,9 @@ import {
 type RegisterBody = {
   email: string;
   password: string;
+  registrationChallenge?: string;
+  company?: string;
+  turnstileToken?: string;
 };
 
 type LoginBody = {
@@ -43,11 +49,28 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     return { csrfToken };
   });
 
+  app.get('/api/auth/register/challenge', async () => createRegistrationChallenge());
+
   app.post<{ Body: RegisterBody }>('/api/auth/register', async (request, reply) => {
     try {
+      await guardRegisterByIp(request.ip);
       await guardWriteByIp(request.ip);
     } catch (error: any) {
       return reply.code(429).send({ message: error.message });
+    }
+
+    if (request.body.company?.trim()) {
+      return reply.code(400).send({ message: 'Registration request rejected.' });
+    }
+
+    const challengeResult = validateRegistrationChallenge(request.body.registrationChallenge);
+    if (!challengeResult.ok) {
+      return reply.code(400).send({ message: challengeResult.message });
+    }
+
+    const turnstileResult = await verifyTurnstileToken(request.body.turnstileToken, request.ip);
+    if (!turnstileResult.ok) {
+      return reply.code(400).send({ message: turnstileResult.message });
     }
 
     const email = request.body.email?.toLowerCase().trim();
@@ -91,6 +114,38 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     return { user: sanitizeUser(created) };
   });
+
+  app.post<{ Body: { password?: string } }>(
+    '/api/auth/reauth',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      try {
+        await guardLoginByIp(request.ip);
+      } catch (error: any) {
+        return reply.code(429).send({ message: error.message });
+      }
+
+      const password = request.body.password;
+      if (!password) {
+        return reply.code(400).send({ message: 'Password is required' });
+      }
+
+      const user = await getUserById(request.user.id);
+      if (!user || !user.is_active) {
+        clearSessionCookie(reply);
+        clearSensitiveAuthCookie(reply);
+        return reply.code(401).send({ message: 'Unauthorized' });
+      }
+
+      const valid = await bcrypt.compare(password, user.password_hash);
+      if (!valid) {
+        return reply.code(401).send({ message: 'Invalid password' });
+      }
+
+      issueSensitiveAuthCookie(reply, user.id);
+      return { success: true };
+    }
+  );
 
   app.post<{ Body: LoginBody }>('/api/auth/login', async (request, reply) => {
     try {
@@ -202,6 +257,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.post('/api/auth/logout', { preHandler: app.authenticate }, async (_request, reply) => {
     clearSessionCookie(reply);
+    clearSensitiveAuthCookie(reply);
     return { success: true };
   });
 

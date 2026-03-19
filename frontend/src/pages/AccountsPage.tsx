@@ -8,6 +8,8 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
+import { SensitiveActionModal } from '../components/security/SensitiveActionModal';
+import { authApi } from '../api';
 
 const OFFLINE_CODES_KEY = 'steamguard-offline-codes';
 
@@ -48,6 +50,10 @@ export function AccountsPage() {
   const [guardModalDomain, setGuardModalDomain] = useState<string | null>(null);
   const [guardCodeInput, setGuardCodeInput] = useState('');
   const [guardModalError, setGuardModalError] = useState<string | null>(null);
+  const [sensitiveModalOpen, setSensitiveModalOpen] = useState(false);
+  const [sensitiveModalError, setSensitiveModalError] = useState<string | null>(null);
+  const [sensitiveBusy, setSensitiveBusy] = useState(false);
+  const [pendingExport, setPendingExport] = useState<{ accountId: number; alias: string } | null>(null);
 
   const [cachedCodes, setCachedCodes] = useState<CachedCode>(() => {
     const raw = localStorage.getItem(OFFLINE_CODES_KEY);
@@ -288,6 +294,25 @@ export function AccountsPage() {
     }
   };
 
+  const runSensitiveExport = async (password: string) => {
+    if (!pendingExport) {
+      return;
+    }
+
+    setSensitiveBusy(true);
+    setSensitiveModalError(null);
+    try {
+      await authApi.reauthenticate(password);
+      await accountApi.export(pendingExport.accountId, pendingExport.alias);
+      setSensitiveModalOpen(false);
+      setPendingExport(null);
+    } catch (err: any) {
+      setSensitiveModalError(err?.response?.data?.message || err.message || t('auth.reauthFailed'));
+    } finally {
+      setSensitiveBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">{t('accounts.title')}</h1>
@@ -431,7 +456,11 @@ export function AccountsPage() {
                       <Button
                         variant="secondary"
                         className="gap-1"
-                        onClick={() => void accountApi.export(account.id, account.alias)}
+                        onClick={() => {
+                          setPendingExport({ accountId: account.id, alias: account.alias });
+                          setSensitiveModalError(null);
+                          setSensitiveModalOpen(true);
+                        }}
                       >
                         <Download size={14} />
                         {t('accounts.export')}
@@ -505,6 +534,22 @@ export function AccountsPage() {
           </div>
         </div>
       )}
+
+      <SensitiveActionModal
+        open={sensitiveModalOpen}
+        title={t('auth.sensitiveActionTitle')}
+        description={t('auth.sensitiveExportDescription')}
+        busy={sensitiveBusy}
+        error={sensitiveModalError}
+        onClose={() => {
+          setSensitiveModalOpen(false);
+          setSensitiveModalError(null);
+          setPendingExport(null);
+        }}
+        onConfirm={(password) => {
+          void runSensitiveExport(password);
+        }}
+      />
     </div>
   );
 }

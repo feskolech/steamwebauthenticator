@@ -1,10 +1,17 @@
 import { buildApp } from './app';
-import { env } from './config/env';
+import { env, isProd } from './config/env';
 import { db } from './db/pool';
 import { ensureBootstrapData } from './db/bootstrap';
 import { startConfirmationPoller, stopConfirmationPoller } from './jobs/confirmationPoller';
 
+function assertSecureBootstrapConfig(): void {
+  if (isProd && env.ADMIN_PASSWORD === 'admin123') {
+    throw new Error('Refusing to start in production with default ADMIN_PASSWORD.');
+  }
+}
+
 async function start() {
+  assertSecureBootstrapConfig();
   const app = await buildApp();
 
   try {

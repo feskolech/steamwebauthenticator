@@ -43,3 +43,28 @@ body {
 .button-secondary {
   @apply inline-flex items-center justify-center rounded-xl border border-base-200 bg-white/80 px-4 py-2 text-sm font-semibold text-base-800 transition hover:bg-base-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-base-700 dark:bg-base-800 dark:text-base-100 dark:hover:bg-base-700;
 }
+
+.turnstile-shell {
+  @apply flex min-h-[74px] items-center justify-center overflow-hidden rounded-2xl border border-base-200/80 bg-white px-2 py-2 dark:border-base-700/80 dark:bg-base-900;
+}
+
+.turnstile-hidden-shell {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.turnstile-widget {
+  @apply flex items-center justify-center;
+}
+
+.turnstile-widget > div,
+.turnstile-widget iframe {
+  margin-left: auto;
+  margin-right: auto;
+}

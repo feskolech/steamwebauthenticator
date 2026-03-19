@@ -3,6 +3,24 @@ import { z } from 'zod';
 
 config();
 
+const envBoolean = z.preprocess((value) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off', ''].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3001),
@@ -20,7 +38,10 @@ const envSchema = z.object({
   TELEGRAM_BOT_USERNAME: z.string().optional().default(''),
   ADMIN_EMAIL: z.string().email().default('admin@admin.com'),
   ADMIN_PASSWORD: z.string().min(6).default('admin123'),
-  STEAM_POLL_INTERVAL_SEC: z.coerce.number().default(20)
+  STEAM_POLL_INTERVAL_SEC: z.coerce.number().default(20),
+  TURNSTILE_ENABLED: envBoolean.default(false),
+  TURNSTILE_SECRET_KEY: z.string().optional().default(''),
+  TURNSTILE_SITE_KEY: z.string().optional().default('')
 });
 
 export const env = envSchema.parse(process.env);

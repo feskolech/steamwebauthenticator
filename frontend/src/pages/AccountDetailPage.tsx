@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { accountApi, steamApi } from '../api';
+import { accountApi, authApi, steamApi } from '../api';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
+import { SensitiveActionModal } from '../components/security/SensitiveActionModal';
 import type { Account, ConfirmationQueueItem } from '../types';
 
 export function AccountDetailPage() {
@@ -23,6 +24,10 @@ export function AccountDetailPage() {
   const [reconnectBusy, setReconnectBusy] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [sensitiveModalOpen, setSensitiveModalOpen] = useState(false);
+  const [sensitiveModalBusy, setSensitiveModalBusy] = useState(false);
+  const [sensitiveModalError, setSensitiveModalError] = useState<string | null>(null);
+  const [sensitiveAction, setSensitiveAction] = useState<'session' | 'recovery' | null>(null);
 
   const load = useCallback(async () => {
     const [accountRes, queueRes] = await Promise.all([accountApi.get(accountId), steamApi.queue(accountId)]);
@@ -40,6 +45,39 @@ export function AccountDetailPage() {
   if (!account) {
     return <div>{t('common.loading')}</div>;
   }
+
+  const confirmSensitiveAction = async (password: string) => {
+    if (!sensitiveAction) {
+      return;
+    }
+
+    setSensitiveModalBusy(true);
+    setSensitiveModalError(null);
+    try {
+      await authApi.reauthenticate(password);
+
+      if (sensitiveAction === 'recovery') {
+        const response = await accountApi.getRecoveryCode(accountId);
+        setRecoveryCode(response.recoveryCode);
+      }
+
+      if (sensitiveAction === 'session') {
+        await accountApi.setSession(accountId, { steamLoginSecure, sessionid, oauthToken, refreshToken });
+        setMessage(t('accountDetail.sessionSaved'));
+      }
+
+      setSensitiveModalOpen(false);
+      setSensitiveAction(null);
+    } catch (error: any) {
+      const nextMessage = error?.response?.data?.message || error?.message || t('auth.reauthFailed');
+      setSensitiveModalError(nextMessage);
+      if (sensitiveAction === 'session') {
+        setMessage(nextMessage);
+      }
+    } finally {
+      setSensitiveModalBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -119,10 +157,9 @@ export function AccountDetailPage() {
               <Button
                 variant="secondary"
                 onClick={() => {
-                  void (async () => {
-                    const response = await accountApi.getRecoveryCode(accountId);
-                    setRecoveryCode(response.recoveryCode);
-                  })();
+                  setSensitiveAction('recovery');
+                  setSensitiveModalError(null);
+                  setSensitiveModalOpen(true);
                 }}
               >
                 {t('accountDetail.showRecoveryCode')}
@@ -158,14 +195,9 @@ export function AccountDetailPage() {
           />
           <Button
             onClick={() => {
-              void (async () => {
-                try {
-                  await accountApi.setSession(accountId, { steamLoginSecure, sessionid, oauthToken, refreshToken });
-                  setMessage(t('accountDetail.sessionSaved'));
-                } catch {
-                  setMessage(t('accountDetail.sessionSaveFailed'));
-                }
-              })();
+              setSensitiveAction('session');
+              setSensitiveModalError(null);
+              setSensitiveModalOpen(true);
             }}
           >
             {t('accountDetail.saveSession')}
@@ -267,6 +299,26 @@ export function AccountDetailPage() {
           {queue.length === 0 && <div className="text-sm text-base-500">{t('accountDetail.noPending')}</div>}
         </div>
       </Card>
+
+      <SensitiveActionModal
+        open={sensitiveModalOpen}
+        title={t('auth.sensitiveActionTitle')}
+        description={
+          sensitiveAction === 'recovery'
+            ? t('auth.sensitiveRecoveryDescription')
+            : t('auth.sensitiveSessionDescription')
+        }
+        busy={sensitiveModalBusy}
+        error={sensitiveModalError}
+        onClose={() => {
+          setSensitiveModalOpen(false);
+          setSensitiveModalError(null);
+          setSensitiveAction(null);
+        }}
+        onConfirm={(password) => {
+          void confirmSensitiveAction(password);
+        }}
+      />
     </div>
   );
 }

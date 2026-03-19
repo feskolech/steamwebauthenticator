@@ -73,6 +73,59 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       }))
     };
   });
+
+  app.delete<{ Params: { userId: string } }>(
+    '/api/admin/users/:userId',
+    { preHandler: app.requireAdmin },
+    async (request, reply) => {
+      const userId = Number(request.params.userId);
+      if (!Number.isInteger(userId) || userId <= 0) {
+        return reply.code(400).send({ message: 'Invalid user id' });
+      }
+
+      if (userId === request.user.id) {
+        return reply.code(400).send({ message: 'You cannot delete your own admin account.' });
+      }
+
+      const users = await queryRows<{ id: number; email: string; role: string }[]>(
+        'SELECT id, email, role FROM users WHERE id = ? LIMIT 1',
+        [userId]
+      );
+      const target = users[0];
+      if (!target) {
+        return reply.code(404).send({ message: 'User not found' });
+      }
+
+      if (target.role === 'admin') {
+        return reply.code(403).send({ message: 'Deleting admin accounts is blocked.' });
+      }
+
+      const accounts = await queryRows<{ id: number }[]>(
+        'SELECT id FROM user_accounts WHERE user_id = ?',
+        [userId]
+      );
+      const accountIds = accounts.map((account) => account.id);
+
+      if (accountIds.length > 0) {
+        const placeholders = accountIds.map(() => '?').join(', ');
+        await execute(
+          `UPDATE logs
+           SET account_id = NULL
+           WHERE account_id IN (${placeholders})`,
+          accountIds
+        );
+      }
+
+      await execute('DELETE FROM users WHERE id = ?', [userId]);
+
+      await execute(
+        "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'admin_user_deleted', 'targetUserId', ?, 'targetEmail', ?))",
+        [request.user.id, userId, target.email]
+      );
+
+      return { success: true };
+    }
+  );
 };
 
 export default adminRoutes;

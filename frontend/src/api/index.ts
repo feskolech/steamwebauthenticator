@@ -3,13 +3,28 @@ import type { Account, ConfirmationQueueItem, LogItem, NotificationItem, User } 
 
 export const authApi = {
   me: () => apiClient.get<{ user: User }>('/api/auth/me'),
+  registerChallenge: () =>
+    apiClient.get<{ token: string; minFillMs: number; expiresInSec: number }>('/api/auth/register/challenge'),
+  reauthenticate: (password: string) => apiClient.post<{ success: boolean }>('/api/auth/reauth', { password }),
   login: (email: string, password: string) =>
     apiClient.post<{ user?: User; requires2fa?: boolean; method?: string; message?: string }>('/api/auth/login', {
       email,
       password
     }),
-  register: (email: string, password: string) =>
-    apiClient.post<{ user: User }>('/api/auth/register', { email, password }),
+  register: (
+    email: string,
+    password: string,
+    registrationChallenge: string,
+    company = '',
+    turnstileToken?: string
+  ) =>
+    apiClient.post<{ user: User }>('/api/auth/register', {
+      email,
+      password,
+      registrationChallenge,
+      company,
+      turnstileToken
+    }),
   verifyTelegram2fa: (email: string, code: string) =>
     apiClient.post<{ user: User }>('/api/auth/login/verify-telegram', { email, code }),
   logout: () => apiClient.post<{ success: boolean }>('/api/auth/logout'),
@@ -179,6 +194,8 @@ export const adminApi = {
     apiClient.patch<{ success: boolean }>('/api/admin/settings', { registrationEnabled }),
   users: () =>
     apiClient.get<{ items: Array<{ id: number; email: string; role: string; twofaMethod: string }> }>('/api/admin/users')
+  ,
+  deleteUser: (userId: number) => apiClient.delete<{ success: boolean }>(`/api/admin/users/${userId}`)
 };
 
 export const notificationApi = {

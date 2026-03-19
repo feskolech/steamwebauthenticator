@@ -49,11 +49,10 @@ export async function buildApp() {
 
   app.get('/ws', { websocket: true }, (connection, request) => {
     const socket = (connection as any)?.socket ?? connection;
-    const queryToken = (request.query as { token?: string } | undefined)?.token;
     const cookieToken = (request.cookies as any)?.sg_token;
     const headerToken = cookieValue(request.headers.cookie, 'sg_token');
     const bearerToken = getBearerToken(request.headers.authorization);
-    const token = queryToken ?? cookieToken ?? headerToken ?? bearerToken;
+    const token = cookieToken ?? headerToken ?? bearerToken;
 
     if (!token) {
       if (socket && typeof (socket as any).close === 'function') {

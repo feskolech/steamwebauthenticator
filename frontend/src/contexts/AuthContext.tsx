@@ -16,7 +16,13 @@ type AuthContextType = {
   loading: boolean;
   refreshUser: () => Promise<void>;
   login: (email: string, password: string) => Promise<{ requires2fa?: boolean }>;
-  register: (email: string, password: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    registrationChallenge: string,
+    company?: string,
+    turnstileToken?: string
+  ) => Promise<void>;
   verifyTelegram2fa: (email: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -83,10 +89,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.user);
   }, []);
 
-  const register = useCallback(async (email: string, password: string) => {
-    const response = await authApi.register(email, password);
-    setUser(response.user);
-  }, []);
+  const register = useCallback(
+    async (
+      email: string,
+      password: string,
+      registrationChallenge: string,
+      company = '',
+      turnstileToken?: string
+    ) => {
+      const response = await authApi.register(email, password, registrationChallenge, company, turnstileToken);
+      setUser(response.user);
+    },
+    []
+  );
 
   const logout = useCallback(async () => {
     await authApi.logout();

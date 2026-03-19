@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { startAuthentication } from '@simplewebauthn/browser';
 import { useTranslation } from 'react-i18next';
@@ -11,12 +11,19 @@ import { authApi } from '../api';
 type Mode = 'login' | 'register';
 
 const TELEGRAM_OAUTH_STORAGE_KEY = 'steamguard-telegram-oauth-pending';
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || '';
 
 type TelegramOAuthPending = {
   code: string;
   pollSecret: string;
   deepLink: string | null;
   manualCommand: string;
+  expiresAt: number;
+};
+
+type RegisterChallenge = {
+  token: string;
+  minFillMs: number;
   expiresAt: number;
 };
 
@@ -27,7 +34,10 @@ export function LoginPage() {
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [company, setCompany] = useState('');
   const [telegramCode, setTelegramCode] = useState('');
+  const [registerChallenge, setRegisterChallenge] = useState<RegisterChallenge | null>(null);
+  const [turnstileReady, setTurnstileReady] = useState(!TURNSTILE_SITE_KEY);
   const [requires2fa, setRequires2fa] = useState(false);
   const [telegramOAuth, setTelegramOAuth] = useState<{
     code: string;
@@ -38,12 +48,144 @@ export function LoginPage() {
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const turnstileWidgetIdRef = useRef<string | null>(null);
+  const turnstilePromiseRef = useRef<{
+    resolve: (token: string) => void;
+    reject: (error: Error) => void;
+    timeoutId: number | null;
+  } | null>(null);
 
   useEffect(() => {
     if (user) {
       navigate('/dashboard', { replace: true });
     }
   }, [user, navigate]);
+
+  useEffect(() => {
+    if (mode !== 'register') {
+      setRegisterChallenge(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadChallenge = async () => {
+      try {
+        const response = await authApi.registerChallenge();
+        if (!cancelled) {
+          setRegisterChallenge({
+            token: response.token,
+            minFillMs: response.minFillMs,
+            expiresAt: Date.now() + response.expiresInSec * 1000
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setRegisterChallenge(null);
+        }
+      }
+    };
+
+    void loadChallenge();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  useEffect(() => {
+    if (mode !== 'register' || !TURNSTILE_SITE_KEY) {
+      setTurnstileReady(!TURNSTILE_SITE_KEY);
+      return;
+    }
+
+    let cancelled = false;
+    let widgetId: string | null = null;
+
+    const renderWidget = () => {
+      if (cancelled || !window.turnstile) {
+        return;
+      }
+
+      const container = document.getElementById('turnstile-register-widget');
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = '';
+      widgetId = window.turnstile.render(container, {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: 'auto',
+        execution: 'execute',
+        callback: (token: string) => {
+          const pending = turnstilePromiseRef.current;
+          if (pending) {
+            if (pending.timeoutId) {
+              window.clearTimeout(pending.timeoutId);
+            }
+            turnstilePromiseRef.current = null;
+            pending.resolve(token);
+          }
+        },
+        'expired-callback': () => {
+          const pending = turnstilePromiseRef.current;
+          if (pending) {
+            if (pending.timeoutId) {
+              window.clearTimeout(pending.timeoutId);
+            }
+            turnstilePromiseRef.current = null;
+            pending.reject(new Error(t('auth.completeAntiBot')));
+          }
+          if (widgetId) {
+            window.turnstile?.reset(widgetId);
+          }
+        },
+        'error-callback': () => {
+          const pending = turnstilePromiseRef.current;
+          if (pending) {
+            if (pending.timeoutId) {
+              window.clearTimeout(pending.timeoutId);
+            }
+            turnstilePromiseRef.current = null;
+            pending.reject(new Error(t('auth.turnstileUnavailable')));
+          }
+        }
+      });
+      turnstileWidgetIdRef.current = widgetId;
+      setTurnstileReady(true);
+    };
+
+    const existingScript = document.querySelector<HTMLScriptElement>('script[data-turnstile-script="true"]');
+    if (window.turnstile) {
+      renderWidget();
+    } else if (!existingScript) {
+      const script = document.createElement('script');
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.async = true;
+      script.defer = true;
+      script.dataset.turnstileScript = 'true';
+      script.onload = () => {
+        renderWidget();
+      };
+      document.head.appendChild(script);
+    } else {
+      existingScript.addEventListener('load', renderWidget, { once: true });
+    }
+
+    return () => {
+      cancelled = true;
+      const pending = turnstilePromiseRef.current;
+      if (pending) {
+        if (pending.timeoutId) {
+          window.clearTimeout(pending.timeoutId);
+        }
+        turnstilePromiseRef.current = null;
+      }
+      if (widgetId && window.turnstile) {
+        window.turnstile.remove(widgetId);
+      }
+      turnstileWidgetIdRef.current = null;
+    };
+  }, [mode, t]);
 
   useEffect(() => {
     const raw = sessionStorage.getItem(TELEGRAM_OAUTH_STORAGE_KEY);
@@ -152,6 +294,39 @@ export function LoginPage() {
     [mode, t]
   );
 
+  const executeTurnstile = async (): Promise<string> => {
+    if (!TURNSTILE_SITE_KEY) {
+      return '';
+    }
+
+    const widgetId = turnstileWidgetIdRef.current;
+    if (!window.turnstile || !widgetId || !turnstileReady) {
+      throw new Error(t('auth.turnstileUnavailable'));
+    }
+
+    if (turnstilePromiseRef.current) {
+      throw new Error(t('auth.completeAntiBot'));
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        turnstilePromiseRef.current = null;
+        reject(new Error(t('auth.turnstileTimedOut')));
+      }, 15000);
+
+      turnstilePromiseRef.current = { resolve, reject, timeoutId };
+
+      try {
+        window.turnstile?.reset(widgetId);
+        window.turnstile?.execute(widgetId);
+      } catch {
+        window.clearTimeout(timeoutId);
+        turnstilePromiseRef.current = null;
+        reject(new Error(t('auth.turnstileUnavailable')));
+      }
+    });
+  };
+
   const onSubmit = async () => {
     setError(null);
     setLoading(true);
@@ -165,7 +340,18 @@ export function LoginPage() {
           navigate('/dashboard');
         }
       } else {
-        await register(email, password);
+        if (!registerChallenge || registerChallenge.expiresAt <= Date.now()) {
+          const nextChallenge = await authApi.registerChallenge();
+          setRegisterChallenge({
+            token: nextChallenge.token,
+            minFillMs: nextChallenge.minFillMs,
+            expiresAt: Date.now() + nextChallenge.expiresInSec * 1000
+          });
+          throw new Error(t('auth.registrationFormExpired'));
+        }
+
+        const turnstileToken = TURNSTILE_SITE_KEY ? await executeTurnstile() : undefined;
+        await register(email, password, registerChallenge.token, company, turnstileToken);
         navigate('/dashboard');
       }
     } catch (err: any) {
@@ -260,6 +446,24 @@ export function LoginPage() {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
+          {mode === 'register' && (
+            <>
+              <input
+                type="text"
+                name="company"
+                autoComplete="off"
+                tabIndex={-1}
+                className="hidden"
+                value={company}
+                onChange={(event) => setCompany(event.target.value)}
+              />
+              {TURNSTILE_SITE_KEY && (
+                <div className="turnstile-hidden-shell" aria-hidden="true">
+                  <div id="turnstile-register-widget" className="turnstile-widget" />
+                </div>
+              )}
+            </>
+          )}
 
           {requires2fa && (
             <Input
@@ -273,7 +477,11 @@ export function LoginPage() {
 
           <div className="flex gap-2">
             {!requires2fa ? (
-              <Button className="flex-1" onClick={() => void onSubmit()} disabled={loading}>
+              <Button
+                className="flex-1"
+                onClick={() => void onSubmit()}
+                disabled={loading || (mode === 'register' && (!registerChallenge || !turnstileReady))}
+              >
                 {loading ? t('auth.pleaseWait') : submitLabel}
               </Button>
             ) : (
