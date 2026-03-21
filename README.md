@@ -105,7 +105,7 @@ Core variables:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` bot settings.
 - `STEAM_POLL_INTERVAL_SEC` auto-confirm polling interval.
 - `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` optional Cloudflare Turnstile backend protection.
-- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow.
+- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow. Use the same value as `TURNSTILE_SITE_KEY` because it is the same public Cloudflare site key, just exposed to the Vite frontend build via the `VITE_` prefix.
 
 If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays in disabled idle mode (no crash, API stays up).
 
