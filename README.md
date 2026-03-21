@@ -28,8 +28,11 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 - Telegram account linking with `/add=<code>` (15 min TTL).
 - Telegram commands: `/accounts`, `/codes`, `/confirm <trade_id>`, `/status`.
 - JWT cookie sessions, CSRF protection, Helmet, bcrypt, brute-force guard via `rate-limiter-flexible`.
+- Registration anti-bot protection with honeypot, signed registration challenge, strict rate limits and optional Cloudflare Turnstile.
+- Invisible Turnstile support for registration when configured.
+- Password re-confirmation for sensitive actions such as `.maFile` export, recovery code reveal and manual Steam session save.
 - i18n EN/RU + light/dark theme.
-- Admin panel with global registration toggle.
+- Admin panel with global registration toggle and user deletion.
 - OpenAPI docs JSON at `/api-docs/openapi.json`.
 
 ## Default admin
@@ -38,6 +41,10 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 - Password: `admin123`
 
 (Override with `.env`: `ADMIN_EMAIL`, `ADMIN_PASSWORD`)
+
+Important:
+- The default admin password is for local bootstrap only.
+- Production startup is blocked if `ADMIN_PASSWORD=admin123`.
 
 ## Architecture
 
@@ -97,6 +104,8 @@ Core variables:
 - `APP_URL`, `API_URL` frontend/backend origins.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` bot settings.
 - `STEAM_POLL_INTERVAL_SEC` auto-confirm polling interval.
+- `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` optional Cloudflare Turnstile backend protection.
+- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow.
 
 If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays in disabled idle mode (no crash, API stays up).
 
@@ -105,9 +114,12 @@ If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays i
 - **MA encryption**: AES-256-GCM per user.
 - **Key derivation**: per-user key derived from bcrypt password hash + global `ENCRYPTION_KEY`.
 - **Auth**: JWT in HTTP-only cookie.
+- **Sensitive actions**: password re-confirmation required before `.maFile` export, recovery code reveal and manual Steam session updates.
 - **CSRF**: double-submit protection for mutating endpoints.
 - **Brute-force/DoS**: `rate-limiter-flexible` in auth/write paths.
+- **Anti-bot registration**: signed registration challenge, honeypot, dedicated registration rate limiter and optional invisible Cloudflare Turnstile.
 - **Hardening**: `helmet`, CORS with credentials.
+- **WebSocket auth**: cookie/bearer only, query-string auth disabled.
 - **DB isolation**: MySQL only on internal Docker network (`db_internal`).
 
 ## Telegram flows
@@ -162,10 +174,12 @@ Internal bot endpoints are under `/api/telegram/bot/*` and protected by header:
 1. Install Docker + Docker Compose.
 2. Clone repository.
 3. `cp .env.example .env` and set production secrets.
+4. Change `ADMIN_PASSWORD` from the bootstrap default before production start.
 4. Optionally set external reverse proxy to forward:
    - `/` -> frontend `:3000`
    - `/api` and `/ws` -> backend `:3001`
-5. Run `make deploy`.
+5. If you want anti-bot registration, configure Cloudflare Turnstile keys in `.env`.
+6. Run `make deploy`.
 
 Optional bundled Nginx proxy:
 
