@@ -8,9 +8,14 @@ import { generateSteamCode, respondToConfirmationWithSessionRecovery } from '../
 import { wsHub } from '../services/wsHub';
 
 async function botAuth(request: any, reply: any): Promise<void> {
-  const token = request.headers['x-telegram-bot-token'];
+  const rawToken = request.headers['x-telegram-bot-token'];
+  if (Array.isArray(rawToken)) {
+    return reply.code(401).send({ message: 'Invalid bot token' });
+  }
+
+  const token = rawToken;
   if (!env.TELEGRAM_BOT_TOKEN || token !== env.TELEGRAM_BOT_TOKEN) {
-    reply.code(401).send({ message: 'Invalid bot token' });
+    return reply.code(401).send({ message: 'Invalid bot token' });
   }
 }
 

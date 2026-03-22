@@ -13,6 +13,7 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 - **Fastify (instead of Express)**: lower overhead and better throughput for polling/real-time workloads.
 - **TypeScript on backend/frontend**: safer refactoring and better API contracts.
 - **MySQL 8 + Docker internal network**: relational consistency, easy VPS deploy, DB isolated from public access.
+- **Redis-backed rate limiting in Docker**: shared throttling across backend instances and backend restarts, with in-memory fallback outside Redis setups.
 - **React + Vite + Tailwind**: fast DX + responsive UI + simple theming.
 - **Vite PWA plugin**: installable app + service worker caching.
 - **Aiogram bot**: mature async Telegram framework for command and deep-link flows.
@@ -33,7 +34,7 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 - Password re-confirmation for sensitive actions such as `.maFile` export, recovery code reveal and manual Steam session save.
 - i18n EN/RU + light/dark theme.
 - Admin panel with global registration toggle and user deletion.
-- OpenAPI docs JSON at `/api-docs/openapi.json`.
+- OpenAPI docs JSON at `/api-docs/openapi.json` when `OPENAPI_ENABLED=true`.
 
 ## Default admin
 
@@ -45,6 +46,7 @@ Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-u
 Important:
 - The default admin password is for local bootstrap only.
 - Production startup is blocked if `ADMIN_PASSWORD=admin123`.
+- Production startup is also blocked if `JWT_SECRET`, `COOKIE_SECRET`, or `ENCRYPTION_KEY` still use placeholder-style values such as `change_me...`, are shorter than 32 characters, or reuse the same secret value.
 
 ## Architecture
 
@@ -81,7 +83,7 @@ make dev
 Open:
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:3001`
-- OpenAPI: `http://localhost:3001/api-docs/openapi.json`
+- OpenAPI: `http://localhost:3001/api-docs/openapi.json` (enabled by default in dev/test)
 
 ## Make targets
 
@@ -102,12 +104,32 @@ Core variables:
 - `DB_*` MySQL connection and bootstrap user credentials.
 - `JWT_SECRET`, `COOKIE_SECRET`, `ENCRYPTION_KEY` security secrets.
 - `APP_URL`, `API_URL` frontend/backend origins.
+- `RATE_LIMIT_REDIS_URL`, `RATE_LIMIT_REDIS_PREFIX` shared rate limiting backend; Docker Compose defaults to internal Redis and a NODE_ENV-based prefix.
+- `FORCE_HTTPS` enables HTTP->HTTPS redirects in production (`true` by default, can be disabled for special deployments).
+- `OPENAPI_ENABLED` controls `/api-docs/openapi.json`; enabled by default in dev/test and should stay off in production unless explicitly needed.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` bot settings.
 - `STEAM_POLL_INTERVAL_SEC` auto-confirm polling interval.
 - `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` optional Cloudflare Turnstile backend protection.
 - `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow. Use the same value as `TURNSTILE_SITE_KEY` because it is the same public Cloudflare site key, just exposed to the Vite frontend build via the `VITE_` prefix.
 
+Generate strong secrets before production deploy, for example:
+
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Then place the generated values into `.env` as:
+
+```env
+JWT_SECRET=<first generated value>
+COOKIE_SECRET=<second generated value>
+ENCRYPTION_KEY=<third generated value>
+```
+
 If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays in disabled idle mode (no crash, API stays up).
+If you enable `OPENAPI_ENABLED` in production, prefer exposing it only behind admin auth, VPN, or IP allowlisting.
 
 ## Security model
 
@@ -117,9 +139,11 @@ If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays i
 - **Sensitive actions**: password re-confirmation required before `.maFile` export, recovery code reveal and manual Steam session updates.
 - **CSRF**: double-submit protection for mutating endpoints.
 - **Brute-force/DoS**: `rate-limiter-flexible` in auth/write paths.
+- **Shared throttling**: Docker deployments use Redis-backed rate limits with in-memory insurance fallback if Redis is temporarily unavailable; current Compose defaults do not persist limiter state across Redis restarts.
 - **Anti-bot registration**: signed registration challenge, honeypot, dedicated registration rate limiter and optional invisible Cloudflare Turnstile.
 - **Hardening**: `helmet`, CORS with credentials.
 - **WebSocket auth**: cookie/bearer only, query-string auth disabled.
+- **API caching**: `/api/*` responses are served with `Cache-Control: no-store` to reduce leakage of session-bound data.
 - **DB isolation**: MySQL only on internal Docker network (`db_internal`).
 
 ## Telegram flows
@@ -134,6 +158,8 @@ If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays i
 2. Open bot deep-link (`/start login_<code>`).
 3. Bot confirms code.
 4. Web page polls and creates session automatically.
+
+Deploy frontend and backend together when changing Telegram login polling, because the flow now requires the `x-telegram-poll-token` header instead of the legacy query-string token.
 
 ## Steam confirmations notes
 

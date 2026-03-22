@@ -7,6 +7,7 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3001
+      RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app
       - backend_node_modules:/app/node_modules

@@ -13,6 +13,7 @@ import botRoutes from './routes/bot';
 import notificationRoutes from './routes/notifications';
 import { wsHub } from './services/wsHub';
 import { getBearerToken, verifySessionToken } from './utils/jwt';
+import { isProd } from './config/env';
 
 function cookieValue(cookieHeader: string | undefined, name: string): string | null {
   if (!cookieHeader) {
@@ -33,6 +34,7 @@ function cookieValue(cookieHeader: string | undefined, name: string): string | n
 
 export async function buildApp() {
   const app = Fastify({
+    trustProxy: isProd ? 'loopback, linklocal, uniquelocal' : false,
     logger: {
       transport:
         process.env.NODE_ENV === 'development'

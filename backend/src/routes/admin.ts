@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
+import { requireSensitiveAuth } from '../utils/sensitiveAuth';
 
 const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/admin/overview', { preHandler: app.requireAdmin }, async () => {
@@ -85,6 +86,10 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
 
       if (userId === request.user.id) {
         return reply.code(400).send({ message: 'You cannot delete your own admin account.' });
+      }
+
+      if (!requireSensitiveAuth(request, reply)) {
+        return;
       }
 
       const users = await queryRows<{ id: number; email: string; role: string }[]>(

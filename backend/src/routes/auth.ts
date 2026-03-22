@@ -296,12 +296,12 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get<{ Params: { code: string }; Querystring: { token?: string } }>(
+  app.get<{ Params: { code: string } }>(
     '/api/auth/telegram/oauth/poll/:code',
     async (request, reply) => {
       const rawHeaderToken = request.headers['x-telegram-poll-token'];
       const headerToken = Array.isArray(rawHeaderToken) ? rawHeaderToken[0] : rawHeaderToken;
-      const pollToken = headerToken?.trim() || request.query.token?.trim();
+      const pollToken = headerToken?.trim();
       if (!pollToken) {
         return reply.code(401).send({ message: 'Missing poll token' });
       }

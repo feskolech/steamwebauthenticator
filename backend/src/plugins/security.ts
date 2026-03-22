@@ -55,32 +55,33 @@ export default fp(async (app) => {
 
   await app.register(websocket);
 
-  await app.register(swagger, {
-    openapi: {
-      info: {
-        title: 'SteamGuard Web API',
-        version: '1.0.0'
-      },
-      components: {
-        securitySchemes: {
-          cookieAuth: {
-            type: 'apiKey',
-            in: 'cookie',
-            name: 'sg_token'
+  if (env.OPENAPI_ENABLED) {
+    await app.register(swagger, {
+      openapi: {
+        info: {
+          title: 'SteamGuard Web API',
+          version: '1.0.0'
+        },
+        components: {
+          securitySchemes: {
+            cookieAuth: {
+              type: 'apiKey',
+              in: 'cookie',
+              name: 'sg_token'
+            }
           }
         }
       }
-    }
-  });
+    });
 
-  app.get('/api-docs/openapi.json', async () => {
-    return app.swagger();
-  });
+    app.get('/api-docs/openapi.json', async () => {
+      return app.swagger();
+    });
+  }
 
-  if (isProd) {
+  if (isProd && env.FORCE_HTTPS) {
     app.addHook('onRequest', async (request, reply) => {
-      const forwardedProto = request.headers['x-forwarded-proto'];
-      if (forwardedProto && forwardedProto !== 'https') {
+      if (request.protocol !== 'https') {
         const host = request.headers.host;
         if (host) {
           return reply.redirect(`https://${host}${request.url}`);
@@ -88,6 +89,15 @@ export default fp(async (app) => {
       }
     });
   }
+
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url.startsWith('/api/')) {
+      reply.header('Cache-Control', 'no-store, max-age=0');
+      reply.header('Pragma', 'no-cache');
+    }
+
+    return payload;
+  });
 
   app.addHook('preHandler', (request, reply, done) => {
     if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') {

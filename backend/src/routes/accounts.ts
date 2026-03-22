@@ -706,6 +706,10 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const accountId = Number(request.params.accountId);
 
+      if (!requireSensitiveAuth(request, reply)) {
+        return;
+      }
+
       try {
         await getAccountByOwner(request.user.id, accountId);
       } catch (error: any) {

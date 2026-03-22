@@ -20,6 +20,18 @@ services:
     networks:
       - db_internal
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - db_internal
+
   backend:
     build:
       context: ./backend
@@ -32,8 +44,11 @@ services:
       PORT: 3001
       DB_HOST: mysql
       DB_PORT: 3306
+      RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:-redis://redis:6379/0}
     depends_on:
       mysql:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     expose:
       - "3001"
