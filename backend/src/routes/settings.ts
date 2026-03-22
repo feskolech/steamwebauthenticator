@@ -15,7 +15,7 @@ import { generateRecoveryCodes, hashRecoveryCode } from '../services/recoveryCod
 
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/settings', { preHandler: app.authenticate }, async (request) => {
-    const [users, recoveryCodeRows] = await Promise.all([
+    const [users, recoveryCodeRows, passkeyRows] = await Promise.all([
       queryRows<any[]>(
         `SELECT language, theme, twofa_method, encrypted_totp_secret, telegram_user_id, telegram_username,
                telegram_notify_login_codes, api_key_last4
@@ -29,6 +29,12 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
          FROM user_recovery_codes
          WHERE user_id = ? AND used_at IS NULL`,
         [request.user.id]
+      ),
+      queryRows<{ total: number }[]>(
+        `SELECT COUNT(*) AS total
+         FROM user_passkeys
+         WHERE user_id = ?`,
+        [request.user.id]
       )
     ]);
 
@@ -39,6 +45,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       theme: user?.theme ?? 'light',
       twofaMethod: user?.twofa_method ?? 'none',
       hasTotpSecret: Boolean(user?.encrypted_totp_secret),
+      hasPasskeys: Number(passkeyRows[0]?.total ?? 0) > 0,
       hasRecoveryCodes: Number(recoveryCodeRows[0]?.total ?? 0) > 0,
       telegramLinked: Boolean(user?.telegram_user_id),
       telegramUsername: user?.telegram_username ?? null,
@@ -75,12 +82,19 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     if (request.body.twofaMethod) {
-      const users = await queryRows<{ telegram_user_id: string | null; encrypted_totp_secret: string | null }[]>(
-        'SELECT telegram_user_id, encrypted_totp_secret FROM users WHERE id = ? LIMIT 1',
-        [request.user.id]
-      );
+      const [users, passkeyRows] = await Promise.all([
+        queryRows<{ telegram_user_id: string | null; encrypted_totp_secret: string | null }[]>(
+          'SELECT telegram_user_id, encrypted_totp_secret FROM users WHERE id = ? LIMIT 1',
+          [request.user.id]
+        ),
+        queryRows<{ total: number }[]>(
+          'SELECT COUNT(*) AS total FROM user_passkeys WHERE user_id = ?',
+          [request.user.id]
+        )
+      ]);
       const telegramLinked = Boolean(users[0]?.telegram_user_id);
       const hasTotpSecret = Boolean(users[0]?.encrypted_totp_secret);
+      const hasPasskeys = Number(passkeyRows[0]?.total ?? 0) > 0;
 
       if (request.body.twofaMethod === 'telegram' && !telegramLinked) {
         return reply.code(400).send({ message: 'Link Telegram first' });
@@ -88,6 +102,10 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
 
       if (request.body.twofaMethod === 'totp' && !hasTotpSecret) {
         return reply.code(400).send({ message: 'Set up TOTP first' });
+      }
+
+      if (request.body.twofaMethod === 'webauthn' && !hasPasskeys) {
+        return reply.code(400).send({ message: 'Register a passkey first' });
       }
 
       updates.push('twofa_method = ?');

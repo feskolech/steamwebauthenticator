@@ -10,6 +10,7 @@ type UserRow = {
   telegram_username: string | null;
   twofa_method: 'none' | 'telegram' | 'webauthn' | 'totp';
   encrypted_totp_secret?: string | null;
+  has_passkeys?: number;
   api_key_last4: string | null;
   is_active: number;
   password_hash: string;
@@ -17,7 +18,12 @@ type UserRow = {
 
 export async function getUserByEmail(email: string): Promise<UserRow | null> {
   const rows = await queryRows<UserRow[]>(
-    'SELECT * FROM users WHERE email = ? LIMIT 1',
+    `SELECT u.*, EXISTS(
+       SELECT 1 FROM user_passkeys p WHERE p.user_id = u.id
+     ) AS has_passkeys
+     FROM users u
+     WHERE u.email = ?
+     LIMIT 1`,
     [email.toLowerCase()]
   );
   return rows[0] ?? null;
@@ -25,7 +31,12 @@ export async function getUserByEmail(email: string): Promise<UserRow | null> {
 
 export async function getUserById(id: number): Promise<UserRow | null> {
   const rows = await queryRows<UserRow[]>(
-    'SELECT * FROM users WHERE id = ? LIMIT 1',
+    `SELECT u.*, EXISTS(
+       SELECT 1 FROM user_passkeys p WHERE p.user_id = u.id
+     ) AS has_passkeys
+     FROM users u
+     WHERE u.id = ?
+     LIMIT 1`,
     [id]
   );
   return rows[0] ?? null;
@@ -42,6 +53,7 @@ export function sanitizeUser(user: UserRow): Record<string, unknown> {
     telegramUsername: user.telegram_username,
     twofaMethod: user.twofa_method,
     hasTotpSecret: Boolean(user.encrypted_totp_secret),
+    hasPasskeys: Boolean(user.has_passkeys),
     hasApiKey: Boolean(user.api_key_last4),
     apiKeyLast4: user.api_key_last4,
     isActive: Boolean(user.is_active)

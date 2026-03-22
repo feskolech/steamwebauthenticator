@@ -2,46 +2,52 @@
 
 Open-source web implementation of Steam Desktop Authenticator (SDA) with multi-user and multi-account support.
 
-- Backend: Fastify + TypeScript (API-first REST + WebSocket notifications)
+Russian version: `readme_ru.md`
+
+- Backend: Fastify + TypeScript (REST API + WebSocket notifications)
 - Frontend: React + Vite + Tailwind + PWA
-- DB: MySQL 8 in Docker with encrypted MA files
+- DB: MySQL 8 in Docker with encrypted secrets/session data
+- Shared infra: Redis for rate limiting in Docker deployments
 - Bot: Aiogram (single Telegram bot for all users)
 - License: MIT
 
 ## Why this stack
 
-- **Fastify (instead of Express)**: lower overhead and better throughput for polling/real-time workloads.
-- **TypeScript on backend/frontend**: safer refactoring and better API contracts.
+- **Fastify**: lower overhead and better throughput for polling/real-time workloads.
+- **TypeScript**: safer refactoring and shared API contracts.
 - **MySQL 8 + Docker internal network**: relational consistency, easy VPS deploy, DB isolated from public access.
-- **Redis-backed rate limiting in Docker**: shared throttling across backend instances and backend restarts, with in-memory fallback outside Redis setups.
-- **React + Vite + Tailwind**: fast DX + responsive UI + simple theming.
-- **Vite PWA plugin**: installable app + service worker caching.
+- **Redis-backed rate limiting**: shared throttling across backend instances and restarts, with in-memory fallback outside Redis setups.
+- **React + Vite + Tailwind**: fast DX, responsive UI, simple theming.
+- **Vite PWA plugin**: installable app + service worker support.
 - **Aiogram bot**: mature async Telegram framework for command and deep-link flows.
 
 ## Key features
 
-- MA file import/export (`.maFile`) with AES-256 encryption in DB.
+- `.maFile` import/export with AES-256-GCM encryption in DB.
 - Multi-user + unlimited Steam accounts per user.
 - Steam code generation from `shared_secret`.
-- Trade/login confirmations API + queue + manual confirm/reject.
-- Auto-confirm toggle with per-account delay (0-60s).
-- Telegram OAuth-like login flow via bot deep-link.
-- Telegram account linking with `/add=<code>` (15 min TTL).
+- Trade/login confirmations queue with manual confirm/reject.
+- Auto-confirm toggles with per-account delay.
+- Account folders and tags with filtering in the accounts view.
+- Telegram OAuth-like login via bot deep-link.
+- Telegram account linking with `/add=<code>`.
 - Telegram commands: `/accounts`, `/codes`, `/confirm <trade_id>`, `/status`.
-- JWT cookie sessions, CSRF protection, Helmet, bcrypt, brute-force guard via `rate-limiter-flexible`.
-- Registration anti-bot protection with honeypot, signed registration challenge, strict rate limits and optional Cloudflare Turnstile.
-- Invisible Turnstile support for registration when configured.
-- Password re-confirmation for sensitive actions such as `.maFile` export, recovery code reveal and manual Steam session save.
+- Passkey/WebAuthn login, including usernameless passkey login when the device supports discoverable credentials.
+- TOTP authenticator app support.
+- Recovery codes for break-glass account recovery.
+- JWT cookie sessions, CSRF protection, Helmet, rate limiting, optional Turnstile.
+- Registration policies: open, disabled, domain allowlist, invite-only.
+- Admin panel with registration controls, invite codes, user deletion, and audit trail.
+- Webhook notifications for login/trade/session-expired events with generic and Discord targets.
 - i18n EN/RU + light/dark theme.
-- Admin panel with global registration toggle and user deletion.
-- OpenAPI docs JSON at `/api-docs/openapi.json` when `OPENAPI_ENABLED=true`.
+- OpenAPI JSON at `/api-docs/openapi.json` when `OPENAPI_ENABLED=true`.
 
 ## Default admin
 
 - Email: `admin@admin.com`
 - Password: `admin123`
 
-(Override with `.env`: `ADMIN_EMAIL`, `ADMIN_PASSWORD`)
+Override with `.env`: `ADMIN_EMAIL`, `ADMIN_PASSWORD`
 
 Important:
 - The default admin password is for local bootstrap only.
@@ -53,7 +59,7 @@ Important:
 - Monolith API-first backend (`/api/...`) + WS (`/ws`) on port `3001`.
 - Frontend SPA on port `3000`.
 - Frontend server (Vite/Nginx) proxies `/api` and `/ws` to backend.
-- MySQL is isolated in internal Docker network and not exposed externally.
+- MySQL and Redis are isolated in internal Docker network and not exposed externally.
 - Optional reverse proxy service (`nginx`) in compose profile `proxy`.
 
 ## Project structure
@@ -70,7 +76,8 @@ Important:
 ├── docker-compose.dev.yml
 ├── Makefile
 ├── .env.example
-└── README.md
+├── README.md
+└── readme_ru.md
 ```
 
 ## Quick start
@@ -103,14 +110,14 @@ See `.env.example`.
 Core variables:
 - `DB_*` MySQL connection and bootstrap user credentials.
 - `JWT_SECRET`, `COOKIE_SECRET`, `ENCRYPTION_KEY` security secrets.
-- `APP_URL`, `API_URL` frontend/backend origins.
-- `RATE_LIMIT_REDIS_URL`, `RATE_LIMIT_REDIS_PREFIX` shared rate limiting backend; Docker Compose defaults to internal Redis and a NODE_ENV-based prefix.
+- `APP_URL`, `API_URL` browser/backend origins.
+- `RATE_LIMIT_REDIS_URL`, `RATE_LIMIT_REDIS_PREFIX` shared rate limiting backend; Docker Compose defaults to internal Redis and a `NODE_ENV`-based prefix.
 - `FORCE_HTTPS` enables HTTP->HTTPS redirects in production (`true` by default, can be disabled for special deployments).
 - `OPENAPI_ENABLED` controls `/api-docs/openapi.json`; enabled by default in dev/test and should stay off in production unless explicitly needed.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` bot settings.
 - `STEAM_POLL_INTERVAL_SEC` auto-confirm polling interval.
 - `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` optional Cloudflare Turnstile backend protection.
-- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow. Use the same value as `TURNSTILE_SITE_KEY` because it is the same public Cloudflare site key, just exposed to the Vite frontend build via the `VITE_` prefix.
+- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow.
 
 Generate strong secrets before production deploy, for example:
 
@@ -128,43 +135,134 @@ COOKIE_SECRET=<second generated value>
 ENCRYPTION_KEY=<third generated value>
 ```
 
-If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays in disabled idle mode (no crash, API stays up).
-If you enable `OPENAPI_ENABLED` in production, prefer exposing it only behind admin auth, VPN, or IP allowlisting.
+Important operator notes:
+- If `TELEGRAM_BOT_TOKEN` is empty or starts with `change_me`, bot service stays in disabled idle mode.
+- If you enable `OPENAPI_ENABLED` in production, prefer exposing it only behind admin auth, VPN, or IP allowlisting.
+- `APP_URL` must exactly match the browser-facing origin used for WebAuthn/passkeys. If your reverse proxy exposes another hostname or scheme, passkey login/registration will fail.
 
 ## Security model
 
 - **MA encryption**: AES-256-GCM per user.
 - **Key derivation**: per-user key derived from bcrypt password hash + global `ENCRYPTION_KEY`.
 - **Auth**: JWT in HTTP-only cookie.
-- **Sensitive actions**: password re-confirmation required before `.maFile` export, recovery code reveal and manual Steam session updates.
+- **2FA**: Telegram, passkeys, TOTP authenticator app.
+- **Break-glass recovery**: one-time recovery codes can be generated from settings; using one resets configured 2FA and removes registered passkeys for that user.
+- **Sensitive actions**: password re-confirmation required before `.maFile` export, recovery code reveal, manual Steam session updates, and recovery code regeneration.
 - **CSRF**: double-submit protection for mutating endpoints.
 - **Brute-force/DoS**: `rate-limiter-flexible` in auth/write paths.
 - **Shared throttling**: Docker deployments use Redis-backed rate limits with in-memory insurance fallback if Redis is temporarily unavailable; current Compose defaults do not persist limiter state across Redis restarts.
 - **Anti-bot registration**: signed registration challenge, honeypot, dedicated registration rate limiter and optional invisible Cloudflare Turnstile.
 - **Hardening**: `helmet`, CORS with credentials.
 - **WebSocket auth**: cookie/bearer only, query-string auth disabled.
-- **API caching**: `/api/*` responses are served with `Cache-Control: no-store` to reduce leakage of session-bound data.
+- **API caching**: `/api/*` responses are served with `Cache-Control: no-store`.
 - **DB isolation**: MySQL only on internal Docker network (`db_internal`).
+
+## Registration policies
+
+The admin panel supports these registration modes:
+
+- `open` - normal self-registration.
+- `disabled` - registration blocked for everyone.
+- `domain_allowlist` - only email domains from the configured allowlist can register.
+- `invite_only` - registration requires a valid invite code.
+
+Invite-only mode also includes invite code management in the admin panel.
 
 ## Telegram flows
 
 ### Link Telegram account
-1. In Settings click "Generate /add code".
-2. Send `/add=<code>` to bot within 15 min.
-3. Bot binds `telegram_user_id` to your web user.
+1. In Settings click `Generate /add code`.
+2. Send `/add=<code>` to the bot within 15 minutes.
+3. The bot binds `telegram_user_id` to your web user.
 
 ### Login via Telegram
-1. On login page click "Login via Telegram".
-2. Open bot deep-link (`/start login_<code>`).
-3. Bot confirms code.
-4. Web page polls and creates session automatically.
+1. On login page click `Login via Telegram`.
+2. Open the bot manually using the provided button or `/start login_<code>` command.
+3. Confirm the login in the bot.
+4. Return to the web page; it polls and creates the session automatically.
 
 Deploy frontend and backend together when changing Telegram login polling, because the flow now requires the `x-telegram-poll-token` header instead of the legacy query-string token.
+
+## Authentication methods
+
+### Passkeys
+- Passkeys can be registered from Settings.
+- Login supports both email-first passkey flow and usernameless passkey login.
+- Usernameless passkey login depends on discoverable credentials supported by the authenticator/platform.
+
+### TOTP
+- TOTP setup is started in Settings.
+- The app shows a QR code and manual secret.
+- After verifying the first code, TOTP can be selected as the primary 2FA method.
+
+### Recovery codes
+- Recovery codes are generated from Settings after password re-authentication.
+- Codes are shown only once.
+- Using a recovery code signs the user in and clears configured 2FA/passkeys so the user can recover access safely.
+
+## Account organization
+
+- Accounts can be grouped into folders.
+- Accounts can have multiple tags.
+- The accounts page supports filtering by folder and tag.
+- Account details page supports assigning folder/tags per account.
+
+## Admin audit trail
+
+The admin panel includes an audit view with filters by category and actor.
+
+Main categories:
+- `steam`
+- `auth`
+- `security`
+
+Examples of tracked events:
+- registration policy changes
+- invite creation/deletion
+- webhook creation/testing/deletion
+- TOTP enablement
+- recovery code regeneration/use
+- admin user deletion
+- Steam confirmations and session events
+
+## Webhook notifications
+
+Webhook settings are available in the user Settings page.
+
+Supported targets:
+- `generic` - JSON POST webhook
+- `discord` - Discord embed webhook
+
+Supported events:
+- `trade`
+- `login`
+- `steam_session_expired`
+
+Notes:
+- Webhook delivery failures are recorded in DB and do not break the in-app notification flow.
+- Test delivery is available from Settings.
+
+Generic webhook payload shape:
+
+```json
+{
+  "event": "trade",
+  "occurredAt": "2026-03-22T12:00:00.000Z",
+  "payload": {
+    "accountId": 1,
+    "accountAlias": "Main",
+    "headline": "New trade offer",
+    "summary": "..."
+  }
+}
+```
 
 ## Steam confirmations notes
 
 Steam mobile confirmations require valid session tokens (`steamLoginSecure`, `sessionid`, optional `oauthToken`).
 You can set/update them in account detail page (`/accounts/:id`) or they are imported if present in `.maFile` session payload.
+
+Only active `pending` confirmations are shown in the queue view.
 
 ## Bot API integration
 
@@ -201,11 +299,12 @@ Internal bot endpoints are under `/api/telegram/bot/*` and protected by header:
 2. Clone repository.
 3. `cp .env.example .env` and set production secrets.
 4. Change `ADMIN_PASSWORD` from the bootstrap default before production start.
-4. Optionally set external reverse proxy to forward:
+5. Configure `APP_URL` and `API_URL` to match your real external origin/proxy layout.
+6. Optionally set external reverse proxy to forward:
    - `/` -> frontend `:3000`
    - `/api` and `/ws` -> backend `:3001`
-5. If you want anti-bot registration, configure Cloudflare Turnstile keys in `.env`.
-6. Run `make deploy`.
+7. If you want anti-bot registration, configure Cloudflare Turnstile keys in `.env`.
+8. Run `make deploy`.
 
 Optional bundled Nginx proxy:
 

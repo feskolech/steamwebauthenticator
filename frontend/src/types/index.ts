@@ -8,6 +8,7 @@ export type User = {
   telegramUsername: string | null;
   twofaMethod: 'none' | 'telegram' | 'webauthn' | 'totp';
   hasTotpSecret: boolean;
+  hasPasskeys: boolean;
   hasApiKey: boolean;
   apiKeyLast4: string | null;
   isActive: boolean;

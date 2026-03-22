@@ -260,6 +260,7 @@
   "admin.unknownActor": "неизвестный пользователь",
   "admin.deleteUser": "Удалить пользователя",
   "admin.deleteUserConfirm": "Удалить пользователя {{email}} и все связанные Steam-аккаунты?",
+  "admin.deleteUserSensitiveDescription": "Введите пароль от сайта, чтобы удалить пользователя {{email}} и все связанные Steam-аккаунты.",
   "admin.deleteUserFailed": "Не удалось удалить пользователя",
 
   "logs.title": "Логи активности",

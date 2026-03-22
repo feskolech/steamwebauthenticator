@@ -193,6 +193,7 @@ export const settingsApi = {
       theme: 'light' | 'dark';
       twofaMethod: 'none' | 'telegram' | 'webauthn' | 'totp';
       hasTotpSecret: boolean;
+      hasPasskeys: boolean;
       hasRecoveryCodes: boolean;
       telegramLinked: boolean;
       telegramUsername: string | null;

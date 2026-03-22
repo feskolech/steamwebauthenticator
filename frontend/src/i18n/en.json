@@ -260,6 +260,7 @@
   "admin.unknownActor": "unknown actor",
   "admin.deleteUser": "Delete user",
   "admin.deleteUserConfirm": "Delete user {{email}} and all linked Steam accounts?",
+  "admin.deleteUserSensitiveDescription": "Enter your website password to delete user {{email}} and all linked Steam accounts.",
   "admin.deleteUserFailed": "Failed to delete user",
 
   "logs.title": "Activity logs",

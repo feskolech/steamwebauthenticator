@@ -17,6 +17,7 @@ export function SettingsPage() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [twofaMethod, setTwofaMethod] = useState<'none' | 'telegram' | 'webauthn' | 'totp'>('none');
   const [hasTotpSecret, setHasTotpSecret] = useState(false);
+  const [hasPasskeys, setHasPasskeys] = useState(false);
   const [hasRecoveryCodes, setHasRecoveryCodes] = useState(false);
   const [telegramInfo, setTelegramInfo] = useState<{ linked: boolean; username: string | null }>({
     linked: false,
@@ -48,6 +49,7 @@ export function SettingsPage() {
     setTheme(settings.theme);
     setTwofaMethod(settings.twofaMethod);
     setHasTotpSecret(settings.hasTotpSecret);
+    setHasPasskeys(settings.hasPasskeys);
     setHasRecoveryCodes(settings.hasRecoveryCodes);
     setTelegramInfo({
       linked: settings.telegramLinked,
@@ -212,7 +214,7 @@ export function SettingsPage() {
               <option value="none">{t('settings.none')}</option>
               <option value="telegram">{t('settings.telegramCodeMethod')}</option>
               <option value="totp" disabled={!hasTotpSecret}>{t('settings.totpMethod')}</option>
-              <option value="webauthn">{t('settings.passkeyMethod')}</option>
+              <option value="webauthn" disabled={!hasPasskeys}>{t('settings.passkeyMethod')}</option>
             </select>
           </label>
         </div>

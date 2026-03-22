@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { adminApi } from '../api';
+import { adminApi, authApi } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import { Badge } from '../components/ui/Badge';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { SensitiveActionModal } from '../components/security/SensitiveActionModal';
 import { Input } from '../components/ui/Input';
 import type { AdminLogItem, RegistrationInvite } from '../types';
 
@@ -26,6 +27,9 @@ export function AdminPage() {
   const [auditScope, setAuditScope] = useState<Scope>('all');
   const [auditUserId, setAuditUserId] = useState<string>('all');
   const [busyUserId, setBusyUserId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; email: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (nextScope: Scope, nextUserId: string) => {
@@ -60,6 +64,27 @@ export function AdminPage() {
   if (user?.role !== 'admin') {
     return <div>{t('admin.accessRequired')}</div>;
   }
+
+  const confirmDeleteUser = async (password: string) => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setDeleteBusy(true);
+    setDeleteError(null);
+    setError(null);
+    try {
+      await authApi.reauthenticate(password);
+      await adminApi.deleteUser(deleteTarget.id);
+      await load(auditScope, auditUserId);
+      setDeleteTarget(null);
+    } catch (err: any) {
+      setDeleteError(err?.response?.data?.message || err.message || t('admin.deleteUserFailed'));
+    } finally {
+      setDeleteBusy(false);
+      setBusyUserId(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -224,22 +249,9 @@ export function AdminPage() {
                     variant="danger"
                     disabled={busyUserId === item.id}
                     onClick={() => {
-                      if (!window.confirm(t('admin.deleteUserConfirm', { email: item.email }))) {
-                        return;
-                      }
-
                       setBusyUserId(item.id);
-                      setError(null);
-                      void (async () => {
-                        try {
-                          await adminApi.deleteUser(item.id);
-                          await load(auditScope, auditUserId);
-                        } catch (err: any) {
-                          setError(err?.response?.data?.message || err.message || t('admin.deleteUserFailed'));
-                        } finally {
-                          setBusyUserId(null);
-                        }
-                      })();
+                      setDeleteError(null);
+                      setDeleteTarget({ id: item.id, email: item.email });
                     }}
                   >
                     {busyUserId === item.id ? t('common.loading') : t('admin.deleteUser')}
@@ -329,6 +341,24 @@ export function AdminPage() {
           {auditLogs.length === 0 && <div className="text-sm text-base-500">{t('admin.auditEmpty')}</div>}
         </div>
       </Card>
+
+      <SensitiveActionModal
+        open={Boolean(deleteTarget)}
+        title={t('auth.sensitiveActionTitle')}
+        description={t('admin.deleteUserSensitiveDescription', { email: deleteTarget?.email ?? '' })}
+        busy={deleteBusy}
+        error={deleteError}
+        onClose={() => {
+          if (!deleteBusy) {
+            setDeleteTarget(null);
+            setDeleteError(null);
+            setBusyUserId(null);
+          }
+        }}
+        onConfirm={(password) => {
+          void confirmDeleteUser(password);
+        }}
+      />
     </div>
   );
 }
