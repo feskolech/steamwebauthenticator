@@ -1,25 +1,45 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
-import { createOpaqueCode, hashApiKey } from '../utils/crypto';
+import { createOpaqueCode, decryptForUser, encryptForUser, hashApiKey } from '../utils/crypto';
+import { requireSensitiveAuth } from '../utils/sensitiveAuth';
+import {
+  createUserWebhook,
+  deleteUserWebhook,
+  listUserWebhooks,
+  testUserWebhook,
+  type WebhookTargetType
+} from '../services/webhookService';
+import { getUserById } from '../services/userService';
+import { buildTotpSetup, verifyTotpCode } from '../services/totpService';
+import { generateRecoveryCodes, hashRecoveryCode } from '../services/recoveryCodeService';
 
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/settings', { preHandler: app.authenticate }, async (request) => {
-    const users = await queryRows<any[]>(
-      `SELECT language, theme, steam_userid, twofa_method, telegram_user_id, telegram_username,
-              telegram_notify_login_codes, api_key_last4
-       FROM users
-       WHERE id = ?
-       LIMIT 1`,
-      [request.user.id]
-    );
+    const [users, recoveryCodeRows] = await Promise.all([
+      queryRows<any[]>(
+        `SELECT language, theme, twofa_method, encrypted_totp_secret, telegram_user_id, telegram_username,
+               telegram_notify_login_codes, api_key_last4
+         FROM users
+         WHERE id = ?
+         LIMIT 1`,
+        [request.user.id]
+      ),
+      queryRows<{ total: number }[]>(
+        `SELECT COUNT(*) AS total
+         FROM user_recovery_codes
+         WHERE user_id = ? AND used_at IS NULL`,
+        [request.user.id]
+      )
+    ]);
 
     const user = users[0];
 
     return {
       language: user?.language ?? 'en',
       theme: user?.theme ?? 'light',
-      steamUserId: user?.steam_userid ?? null,
       twofaMethod: user?.twofa_method ?? 'none',
+      hasTotpSecret: Boolean(user?.encrypted_totp_secret),
+      hasRecoveryCodes: Number(recoveryCodeRows[0]?.total ?? 0) > 0,
       telegramLinked: Boolean(user?.telegram_user_id),
       telegramUsername: user?.telegram_username ?? null,
       telegramNotifyLoginCodes: Boolean(user?.telegram_notify_login_codes),
@@ -31,8 +51,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
     Body: {
       language?: 'en' | 'ru';
       theme?: 'light' | 'dark';
-      steamUserId?: string | null;
-      twofaMethod?: 'none' | 'telegram' | 'webauthn';
+      twofaMethod?: 'none' | 'telegram' | 'webauthn' | 'totp';
       telegramNotifyLoginCodes?: boolean;
     };
   }>('/api/settings', { preHandler: app.authenticate }, async (request, reply) => {
@@ -55,20 +74,20 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       values.push(request.body.theme);
     }
 
-    if (request.body.steamUserId !== undefined) {
-      updates.push('steam_userid = ?');
-      values.push(request.body.steamUserId || null);
-    }
-
     if (request.body.twofaMethod) {
-      const users = await queryRows<{ telegram_user_id: string | null }[]>(
-        'SELECT telegram_user_id FROM users WHERE id = ? LIMIT 1',
+      const users = await queryRows<{ telegram_user_id: string | null; encrypted_totp_secret: string | null }[]>(
+        'SELECT telegram_user_id, encrypted_totp_secret FROM users WHERE id = ? LIMIT 1',
         [request.user.id]
       );
       const telegramLinked = Boolean(users[0]?.telegram_user_id);
+      const hasTotpSecret = Boolean(users[0]?.encrypted_totp_secret);
 
       if (request.body.twofaMethod === 'telegram' && !telegramLinked) {
         return reply.code(400).send({ message: 'Link Telegram first' });
+      }
+
+      if (request.body.twofaMethod === 'totp' && !hasTotpSecret) {
+        return reply.code(400).send({ message: 'Set up TOTP first' });
       }
 
       updates.push('twofa_method = ?');
@@ -135,6 +154,163 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
 
     return { success: true };
   });
+
+  app.post('/api/settings/totp/setup', { preHandler: app.authenticate }, async (request, reply) => {
+    const user = await getUserById(request.user.id);
+    if (!user) {
+      return reply.code(404).send({ message: 'User not found' });
+    }
+
+    const setup = await buildTotpSetup(user.email);
+    const encryptedSecret = encryptForUser(setup.secret, user.password_hash, user.id);
+
+    await execute(
+      `INSERT INTO pending_totp_setups (user_id, encrypted_secret, expires_at)
+       VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))
+       ON DUPLICATE KEY UPDATE encrypted_secret = VALUES(encrypted_secret), expires_at = VALUES(expires_at)`,
+      [user.id, encryptedSecret]
+    );
+
+    return {
+      secret: setup.secret,
+      otpauthUrl: setup.otpauthUrl,
+      qrCodeDataUrl: setup.qrCodeDataUrl,
+      expiresInSec: 600
+    };
+  });
+
+  app.post<{ Body: { code?: string } }>('/api/settings/totp/verify', { preHandler: app.authenticate }, async (request, reply) => {
+    const code = request.body.code?.trim();
+    if (!code) {
+      return reply.code(400).send({ message: 'TOTP code is required' });
+    }
+
+    const user = await getUserById(request.user.id);
+    if (!user) {
+      return reply.code(404).send({ message: 'User not found' });
+    }
+
+    const pendingRows = await queryRows<{ encrypted_secret: string }[]>(
+      `SELECT encrypted_secret
+       FROM pending_totp_setups
+       WHERE user_id = ? AND expires_at > UTC_TIMESTAMP()
+       LIMIT 1`,
+      [user.id]
+    );
+
+    const pending = pendingRows[0];
+    if (!pending) {
+      return reply.code(400).send({ message: 'TOTP setup expired' });
+    }
+
+    const secret = decryptForUser(pending.encrypted_secret, user.password_hash, user.id);
+    if (!verifyTotpCode(secret, code)) {
+      return reply.code(400).send({ message: 'Invalid TOTP code' });
+    }
+
+    await execute('UPDATE users SET encrypted_totp_secret = ?, twofa_method = ? WHERE id = ?', [
+      pending.encrypted_secret,
+      'totp',
+      user.id
+    ]);
+    await execute('DELETE FROM pending_totp_setups WHERE user_id = ?', [user.id]);
+    await execute(
+      "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'totp_enabled'))",
+      [user.id]
+    );
+
+    return { success: true };
+  });
+
+  app.post('/api/settings/recovery-codes/regenerate', { preHandler: app.authenticate }, async (request, reply) => {
+    if (!requireSensitiveAuth(request, reply)) {
+      return;
+    }
+
+    const codes = generateRecoveryCodes(8);
+
+    await execute('DELETE FROM user_recovery_codes WHERE user_id = ?', [request.user.id]);
+    for (const code of codes) {
+      await execute('INSERT INTO user_recovery_codes (user_id, code_hash) VALUES (?, ?)', [
+        request.user.id,
+        hashRecoveryCode(code)
+      ]);
+    }
+
+    await execute(
+      "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'recovery_codes_regenerated'))",
+      [request.user.id]
+    );
+
+    return { codes };
+  });
+
+  app.get('/api/settings/webhooks', { preHandler: app.authenticate }, async (request) => {
+    return {
+      items: await listUserWebhooks(request.user.id)
+    };
+  });
+
+  app.post<{
+    Body: { name?: string; url?: string; targetType?: WebhookTargetType; eventTypes?: string[] };
+  }>('/api/settings/webhooks', { preHandler: app.authenticate }, async (request, reply) => {
+    try {
+      const webhook = await createUserWebhook(request.user.id, request.body ?? {});
+      await execute(
+        "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'webhook_created', 'targetType', ?, 'name', ?))",
+        [request.user.id, webhook.targetType, webhook.name]
+      );
+      return { webhook };
+    } catch (error: any) {
+      return reply.code(400).send({ message: error.message });
+    }
+  });
+
+  app.delete<{ Params: { webhookId: string } }>(
+    '/api/settings/webhooks/:webhookId',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const webhookId = Number(request.params.webhookId);
+      if (!Number.isInteger(webhookId) || webhookId <= 0) {
+        return reply.code(400).send({ message: 'Invalid webhook id' });
+      }
+
+      try {
+        await deleteUserWebhook(request.user.id, webhookId);
+        await execute(
+          "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'webhook_deleted', 'webhookId', ?))",
+          [request.user.id, webhookId]
+        );
+        return { success: true };
+      } catch (error: any) {
+        const statusCode = error.message === 'Webhook not found' ? 404 : 400;
+        return reply.code(statusCode).send({ message: error.message });
+      }
+    }
+  );
+
+  app.post<{ Params: { webhookId: string } }>(
+    '/api/settings/webhooks/:webhookId/test',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const webhookId = Number(request.params.webhookId);
+      if (!Number.isInteger(webhookId) || webhookId <= 0) {
+        return reply.code(400).send({ message: 'Invalid webhook id' });
+      }
+
+      try {
+        await testUserWebhook(request.user.id, webhookId);
+        await execute(
+          "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'webhook_tested', 'webhookId', ?))",
+          [request.user.id, webhookId]
+        );
+        return { success: true };
+      } catch (error: any) {
+        const statusCode = error.message === 'Webhook not found' ? 404 : 400;
+        return reply.code(statusCode).send({ message: error.message });
+      }
+    }
+  );
 
   app.post('/api/settings/api-key', { preHandler: app.authenticate }, async (request) => {
     const rawKey = createOpaqueCode(24);

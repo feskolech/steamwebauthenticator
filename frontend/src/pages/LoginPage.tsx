@@ -30,12 +30,15 @@ type RegisterChallenge = {
 export function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user, login, register, verifyTelegram2fa, refreshUser } = useAuth();
+  const { user, login, register, verifyTelegram2fa, verifyTotp2fa, verifyRecoveryCode, refreshUser } = useAuth();
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [company, setCompany] = useState('');
-  const [telegramCode, setTelegramCode] = useState('');
+  const [twofaCode, setTwofaCode] = useState('');
+  const [twofaMethod, setTwofaMethod] = useState<'telegram' | 'totp' | null>(null);
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
   const [registerChallenge, setRegisterChallenge] = useState<RegisterChallenge | null>(null);
   const [turnstileReady, setTurnstileReady] = useState(!TURNSTILE_SITE_KEY);
   const [requires2fa, setRequires2fa] = useState(false);
@@ -90,6 +93,13 @@ export function LoginPage() {
     return () => {
       cancelled = true;
     };
+  }, [mode]);
+
+  useEffect(() => {
+    setRequires2fa(false);
+    setTwofaMethod(null);
+    setTwofaCode('');
+    setUseRecoveryCode(false);
   }, [mode]);
 
   useEffect(() => {
@@ -336,6 +346,7 @@ export function LoginPage() {
         const result = await login(email, password);
         if (result.requires2fa) {
           setRequires2fa(true);
+          setTwofaMethod(result.method ?? 'telegram');
         } else {
           navigate('/dashboard');
         }
@@ -351,7 +362,7 @@ export function LoginPage() {
         }
 
         const turnstileToken = TURNSTILE_SITE_KEY ? await executeTurnstile() : undefined;
-        await register(email, password, registerChallenge.token, company, turnstileToken);
+        await register(email, password, registerChallenge.token, inviteCode, company, turnstileToken);
         navigate('/dashboard');
       }
     } catch (err: any) {
@@ -365,7 +376,13 @@ export function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await verifyTelegram2fa(email, telegramCode);
+      if (useRecoveryCode) {
+        await verifyRecoveryCode(email, password, twofaCode);
+      } else if (twofaMethod === 'totp') {
+        await verifyTotp2fa(email, twofaCode);
+      } else {
+        await verifyTelegram2fa(email, twofaCode);
+      }
       navigate('/dashboard');
     } catch (err: any) {
       setError(err?.response?.data?.message || err.message || t('auth.invalidCode'));
@@ -383,29 +400,21 @@ export function LoginPage() {
         expiresAt: Date.now() + response.expiresInSec * 1000
       };
       setTelegramOAuth(nextState);
-      if (response.deepLink) {
-        const opened = window.open(response.deepLink, '_blank', 'noopener,noreferrer');
-        if (!opened) {
-          window.location.href = response.deepLink;
-        }
-      }
     } catch (err: any) {
       setError(err?.response?.data?.message || err.message || t('auth.telegramLoginFailed'));
     }
   };
 
   const onPasskeyLogin = async () => {
-    if (!email) {
-      setError(t('auth.emailRequiredPasskey'));
-      return;
-    }
-
     setError(null);
     setLoading(true);
     try {
-      const options = await authApi.webauthnLoginOptions(email);
+      const options = await authApi.webauthnLoginOptions(email || undefined);
       const authResponse = await startAuthentication(options as any);
-      await authApi.webauthnLoginVerify(email, authResponse);
+      await authApi.webauthnLoginVerify(authResponse, {
+        email: email || undefined,
+        challenge: typeof (options as any).challenge === 'string' ? (options as any).challenge : undefined
+      });
       await refreshUser();
       navigate('/dashboard');
     } catch (err: any) {
@@ -448,6 +457,11 @@ export function LoginPage() {
           />
           {mode === 'register' && (
             <>
+              <Input
+                placeholder={t('auth.inviteCodeOptional')}
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+              />
               <input
                 type="text"
                 name="company"
@@ -466,12 +480,18 @@ export function LoginPage() {
           )}
 
           {requires2fa && (
-            <Input
-              placeholder={t('auth.telegramCode')}
-              value={telegramCode}
-              onChange={(event) => setTelegramCode(event.target.value)}
-            />
-          )}
+              <Input
+                placeholder={
+                  useRecoveryCode
+                    ? t('auth.recoveryCode')
+                    : twofaMethod === 'totp'
+                      ? t('auth.totpCode')
+                      : t('auth.telegramCode')
+                }
+                value={twofaCode}
+                onChange={(event) => setTwofaCode(event.target.value)}
+              />
+            )}
 
           {error && <div className="rounded-xl bg-red-100 px-3 py-2 text-sm text-red-700">{error}</div>}
 
@@ -485,9 +505,22 @@ export function LoginPage() {
                 {loading ? t('auth.pleaseWait') : submitLabel}
               </Button>
             ) : (
-              <Button className="flex-1" onClick={() => void onVerify2fa()} disabled={loading}>
-                {t('auth.verify2fa')}
-              </Button>
+              <div className="flex w-full flex-col gap-2">
+                <Button className="flex-1" onClick={() => void onVerify2fa()} disabled={loading}>
+                  {useRecoveryCode ? t('auth.useRecoveryCode') : t('auth.verify2fa')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  className="flex-1"
+                  onClick={() => {
+                    setUseRecoveryCode((current) => !current);
+                    setTwofaCode('');
+                  }}
+                  disabled={loading}
+                >
+                  {useRecoveryCode ? t('auth.usePrimary2fa') : t('auth.useRecoveryCodeInstead')}
+                </Button>
+              </div>
             )}
           </div>
         </div>

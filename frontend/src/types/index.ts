@@ -4,10 +4,10 @@ export type User = {
   role: 'user' | 'admin';
   language: 'en' | 'ru';
   theme: 'light' | 'dark';
-  steamUserId: string | null;
   telegramLinked: boolean;
   telegramUsername: string | null;
-  twofaMethod: 'none' | 'telegram' | 'webauthn';
+  twofaMethod: 'none' | 'telegram' | 'webauthn' | 'totp';
+  hasTotpSecret: boolean;
   hasApiKey: boolean;
   apiKeyLast4: string | null;
   isActive: boolean;
@@ -44,8 +44,24 @@ export type AccountTag = {
   createdAt: string;
 };
 
+export type UserWebhook = {
+  id: number;
+  name: string;
+  targetType: 'generic' | 'discord';
+  url: string;
+  eventTypes: Array<'trade' | 'login' | 'steam_session_expired'>;
+  enabled: boolean;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LogItem = {
   id: number;
+  userId?: number | null;
+  userEmail?: string | null;
   accountId: number | null;
   accountAlias: string | null;
   type: 'trade' | 'login' | 'code' | 'system';
@@ -54,6 +70,22 @@ export type LogItem = {
   context: Record<string, string | number | boolean | null>;
   details: Record<string, unknown>;
   createdAt: string;
+};
+
+export type AdminLogItem = LogItem & {
+  userId: number | null;
+  userEmail: string | null;
+};
+
+export type RegistrationInvite = {
+  id: number;
+  code: string;
+  note: string | null;
+  expiresAt: string;
+  usedAt: string | null;
+  createdAt: string;
+  createdByEmail: string;
+  usedByEmail: string | null;
 };
 
 export type NotificationItem = {

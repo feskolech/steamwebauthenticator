@@ -93,6 +93,28 @@ describe('route access control', () => {
     await app.close();
   });
 
+  it('requires sensitive re-auth for recovery code regeneration', async () => {
+    const app = await buildApp();
+    const csrf = await csrfContext(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/settings/recovery-codes/regenerate',
+      headers: {
+        cookie: `${sessionCookie({ id: 42, email: 'user@example.com', role: 'user' })}; ${csrf.csrfCookie}`,
+        'csrf-token': csrf.csrfToken
+      }
+    });
+
+    expect(response.statusCode).toBe(428);
+    expect(response.json()).toEqual({
+      code: 'SENSITIVE_AUTH_REQUIRED',
+      message: 'Sensitive action requires password confirmation.'
+    });
+
+    await app.close();
+  });
+
   it('blocks telegram bot endpoints without bot token', async () => {
     const app = await buildApp();
 

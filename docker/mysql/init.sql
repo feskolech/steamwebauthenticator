@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS global_settings (
   id TINYINT PRIMARY KEY,
   registration_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  registration_mode ENUM('open', 'disabled', 'domain_allowlist', 'invite_only') NOT NULL DEFAULT 'open',
+  allowed_email_domains TEXT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -16,11 +18,11 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
   language VARCHAR(5) NOT NULL DEFAULT 'en',
   theme ENUM('light', 'dark') NOT NULL DEFAULT 'light',
-  steam_userid VARCHAR(64) NULL,
   telegram_user_id BIGINT NULL UNIQUE,
   telegram_username VARCHAR(255) NULL,
   telegram_notify_login_codes BOOLEAN NOT NULL DEFAULT FALSE,
-  twofa_method ENUM('none', 'telegram', 'webauthn') NOT NULL DEFAULT 'none',
+  twofa_method ENUM('none', 'telegram', 'webauthn', 'totp') NOT NULL DEFAULT 'none',
+  encrypted_totp_secret LONGTEXT NULL,
   api_key_hash VARCHAR(128) NULL,
   api_key_last4 VARCHAR(4) NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -86,6 +88,66 @@ CREATE TABLE IF NOT EXISTS account_tag_assignments (
   PRIMARY KEY (account_id, tag_id),
   CONSTRAINT fk_account_tag_assignments_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE,
   CONSTRAINT fk_account_tag_assignments_tag FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_webhooks (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  target_type ENUM('generic', 'discord') NOT NULL,
+  url TEXT NOT NULL,
+  event_types JSON NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_success_at DATETIME NULL,
+  last_failure_at DATETIME NULL,
+  last_error VARCHAR(500) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_user_webhooks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  webhook_id BIGINT UNSIGNED NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  request_body JSON NOT NULL,
+  response_status INT NULL,
+  response_body TEXT NULL,
+  error_message VARCHAR(500) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_webhook_deliveries_webhook FOREIGN KEY (webhook_id) REFERENCES user_webhooks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS registration_invites (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  note VARCHAR(255) NULL,
+  created_by_user_id BIGINT UNSIGNED NOT NULL,
+  used_by_user_id BIGINT UNSIGNED NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_registration_invites_creator FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_registration_invites_used_by FOREIGN KEY (used_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_totp_setups (
+  user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  encrypted_secret LONGTEXT NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_pending_totp_setups_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_recovery_codes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  code_hash VARCHAR(128) NOT NULL,
+  used_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_user_recovery_codes_hash (code_hash),
+  CONSTRAINT fk_user_recovery_codes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS logs (
@@ -172,7 +234,7 @@ CREATE TABLE IF NOT EXISTS user_passkeys (
 
 CREATE TABLE IF NOT EXISTS webauthn_challenges (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  user_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NULL,
   challenge VARCHAR(255) NOT NULL,
   flow ENUM('register', 'login') NOT NULL,
   expires_at DATETIME NOT NULL,

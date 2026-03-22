@@ -20,6 +20,7 @@ import {
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 import { buildSessionExpiredMessage, clearSessionExpiredNotifications } from '../services/sessionNotificationService';
+import { createUserNotification } from '../services/webhookService';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -202,15 +203,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
 
             wsHub.sendToUser(Number(account.user_id), 'confirmation:new', payload);
 
-            await execute(
-              `INSERT INTO notifications (user_id, channel, type, payload)
-               VALUES (?, 'web', ?, CAST(? AS JSON))`,
-              [
-                account.user_id,
-                kind,
-                JSON.stringify(payload)
-              ]
-            );
+            await createUserNotification(Number(account.user_id), kind === 'trade' ? 'trade' : 'login', payload);
 
             if (account.telegram_user_id) {
               if (kind === 'login' && account.telegram_notify_login_codes) {
@@ -345,11 +338,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
               message: buildSessionExpiredMessage(automaticRecoveryAvailable, account.language)
             };
 
-            await execute(
-              `INSERT INTO notifications (user_id, channel, type, payload)
-               VALUES (?, 'web', 'steam_session_expired', CAST(? AS JSON))`,
-              [account.user_id, JSON.stringify(payload)]
-            );
+            await createUserNotification(Number(account.user_id), 'steam_session_expired', payload);
 
             await execute(
               "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_expired'))",

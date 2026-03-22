@@ -18,6 +18,7 @@ import {
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
 import { clearSessionExpiredNotifications } from '../services/sessionNotificationService';
+import { createUserNotification } from '../services/webhookService';
 
 type AccountBundle = {
   id: number;
@@ -220,21 +221,14 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               [conf.nonce, conf.headline, conf.summary, accountId, conf.id]
             );
           } else {
-            await execute(
-              `INSERT INTO notifications (user_id, channel, type, payload)
-               VALUES (?, 'web', 'trade', CAST(? AS JSON))`,
-              [
-                request.user.id,
-                JSON.stringify({
-                  accountId,
-                  accountAlias: account.alias,
-                  confirmationId: conf.id,
-                  kind: 'trade',
-                  headline: conf.headline,
-                  summary: conf.summary
-                })
-              ]
-            );
+            await createUserNotification(request.user.id, 'trade', {
+              accountId,
+              accountAlias: account.alias,
+              confirmationId: conf.id,
+              kind: 'trade',
+              headline: conf.headline,
+              summary: conf.summary
+            });
 
             await execute(
               `INSERT INTO logs (user_id, account_id, type, details)
@@ -295,21 +289,14 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
               [conf.nonce, conf.headline, conf.summary, accountId, conf.id]
             );
           } else {
-            await execute(
-              `INSERT INTO notifications (user_id, channel, type, payload)
-               VALUES (?, 'web', 'login', CAST(? AS JSON))`,
-              [
-                request.user.id,
-                JSON.stringify({
-                  accountId,
-                  accountAlias: account.alias,
-                  confirmationId: conf.id,
-                  kind: 'login',
-                  headline: conf.headline,
-                  summary: conf.summary
-                })
-              ]
-            );
+            await createUserNotification(request.user.id, 'login', {
+              accountId,
+              accountAlias: account.alias,
+              confirmationId: conf.id,
+              kind: 'login',
+              headline: conf.headline,
+              summary: conf.summary
+            });
 
             await execute(
               `INSERT INTO logs (user_id, account_id, type, details)

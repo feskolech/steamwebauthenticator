@@ -34,6 +34,20 @@ async function getColumnType(tableName: string, columnName: string): Promise<str
   return rows[0]?.column_type ?? null;
 }
 
+async function isColumnNullable(tableName: string, columnName: string): Promise<boolean | null> {
+  const rows = await queryRows<{ is_nullable: string }[]>(
+    `SELECT IS_NULLABLE AS is_nullable
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?
+     LIMIT 1`,
+    [tableName, columnName]
+  );
+
+  return rows[0] ? rows[0].is_nullable === 'YES' : null;
+}
+
 async function hasConstraint(tableName: string, constraintName: string): Promise<boolean> {
   const rows = await queryRows<{ cnt: number }[]>(
     `SELECT COUNT(*) AS cnt
@@ -82,6 +96,115 @@ async function ensureSchemaUpgrades(): Promise<void> {
       CONSTRAINT fk_account_tag_assignments_tag FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
     )`
   );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS user_webhooks (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      target_type ENUM('generic', 'discord') NOT NULL,
+      url TEXT NOT NULL,
+      event_types JSON NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      last_success_at DATETIME NULL,
+      last_failure_at DATETIME NULL,
+      last_error VARCHAR(500) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_user_webhooks_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`
+  );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      webhook_id BIGINT UNSIGNED NOT NULL,
+      event_type VARCHAR(64) NOT NULL,
+      request_body JSON NOT NULL,
+      response_status INT NULL,
+      response_body TEXT NULL,
+      error_message VARCHAR(500) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_webhook_deliveries_webhook FOREIGN KEY (webhook_id) REFERENCES user_webhooks(id) ON DELETE CASCADE
+    )`
+  );
+
+  if (!(await hasColumn('global_settings', 'registration_mode'))) {
+    await execute(
+      "ALTER TABLE global_settings ADD COLUMN registration_mode ENUM('open', 'disabled', 'domain_allowlist', 'invite_only') NOT NULL DEFAULT 'open' AFTER registration_enabled"
+    );
+  }
+
+  if (!(await hasColumn('global_settings', 'allowed_email_domains'))) {
+    await execute(
+      'ALTER TABLE global_settings ADD COLUMN allowed_email_domains TEXT NULL AFTER registration_mode'
+    );
+  }
+
+  const registrationModeType = await getColumnType('global_settings', 'registration_mode');
+  if (registrationModeType && !registrationModeType.includes("'invite_only'")) {
+    await execute(
+      "ALTER TABLE global_settings MODIFY COLUMN registration_mode ENUM('open', 'disabled', 'domain_allowlist', 'invite_only') NOT NULL DEFAULT 'open'"
+    );
+  }
+
+  if (await hasColumn('users', 'steam_userid')) {
+    await execute('ALTER TABLE users DROP COLUMN steam_userid');
+  }
+
+  if (!(await hasColumn('users', 'encrypted_totp_secret'))) {
+    await execute('ALTER TABLE users ADD COLUMN encrypted_totp_secret LONGTEXT NULL AFTER twofa_method');
+  }
+
+  const userTwofaMethodType = await getColumnType('users', 'twofa_method');
+  if (userTwofaMethodType && !userTwofaMethodType.includes("'totp'")) {
+    await execute(
+      "ALTER TABLE users MODIFY COLUMN twofa_method ENUM('none', 'telegram', 'webauthn', 'totp') NOT NULL DEFAULT 'none'"
+    );
+  }
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS registration_invites (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(64) NOT NULL UNIQUE,
+      note VARCHAR(255) NULL,
+      created_by_user_id BIGINT UNSIGNED NOT NULL,
+      used_by_user_id BIGINT UNSIGNED NULL,
+      expires_at DATETIME NOT NULL,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_registration_invites_creator FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_registration_invites_used_by FOREIGN KEY (used_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )`
+  );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS pending_totp_setups (
+      user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+      encrypted_secret LONGTEXT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_pending_totp_setups_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`
+  );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS user_recovery_codes (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      code_hash VARCHAR(128) NOT NULL,
+      used_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_user_recovery_codes_hash (code_hash),
+      CONSTRAINT fk_user_recovery_codes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`
+  );
+
+  const webauthnChallengeUserNullable = await isColumnNullable('webauthn_challenges', 'user_id');
+  if (webauthnChallengeUserNullable === false) {
+    await execute('ALTER TABLE webauthn_challenges MODIFY COLUMN user_id BIGINT UNSIGNED NULL');
+  }
 
   if (!(await hasColumn('user_accounts', 'encrypted_revocation_code'))) {
     await execute(

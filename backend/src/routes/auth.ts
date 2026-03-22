@@ -1,8 +1,8 @@
 import type { FastifyPluginAsync } from 'fastify';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { execute, queryRows } from '../db/pool';
-import { createOpaqueCode, createNumericCode, hashApiKey } from '../utils/crypto';
+import { db, execute, queryRows } from '../db/pool';
+import { createOpaqueCode, createNumericCode, decryptForUser, hashApiKey } from '../utils/crypto';
 import { createRegistrationChallenge, validateRegistrationChallenge } from '../utils/registrationChallenge';
 import { clearSessionCookie, issueSessionCookie } from '../utils/session';
 import { clearSensitiveAuthCookie, issueSensitiveAuthCookie } from '../utils/sensitiveAuth';
@@ -18,11 +18,19 @@ import {
   verifyAuthentication,
   verifyRegistration
 } from '../services/passkeyService';
+import {
+  normalizeDomainList,
+  parseRegistrationMode,
+  validateRegistrationAccess
+} from '../services/registrationPolicyService';
+import { hashRecoveryCode } from '../services/recoveryCodeService';
+import { verifyTotpCode } from '../services/totpService';
 
 type RegisterBody = {
   email: string;
   password: string;
   registrationChallenge?: string;
+  inviteCode?: string;
   company?: string;
   turnstileToken?: string;
 };
@@ -80,12 +88,39 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ message: 'Invalid email or password' });
     }
 
-    const settings = await queryRows<{ registration_enabled: number }[]>(
-      'SELECT registration_enabled FROM global_settings WHERE id = 1 LIMIT 1'
+    const settings = await queryRows<
+      { registration_enabled: number; registration_mode: string; allowed_email_domains: string | null }[]
+    >(
+      'SELECT registration_enabled, registration_mode, allowed_email_domains FROM global_settings WHERE id = 1 LIMIT 1'
     );
 
-    if (settings[0] && !settings[0].registration_enabled) {
-      return reply.code(403).send({ message: 'Registration is disabled by administrator' });
+    const registrationMode = parseRegistrationMode(settings[0]?.registration_mode);
+    const inviteCode = request.body.inviteCode?.trim().toUpperCase() || null;
+    const inviteRows = registrationMode === 'invite_only' && inviteCode
+      ? await queryRows<{ id: number }[]>(
+          `SELECT id
+           FROM registration_invites
+           WHERE code = ?
+             AND used_at IS NULL
+             AND expires_at > UTC_TIMESTAMP()
+           LIMIT 1`,
+          [inviteCode]
+        )
+      : [];
+    const invite = inviteRows[0] ?? null;
+
+    try {
+      validateRegistrationAccess(
+        {
+          registrationEnabled: Boolean(settings[0]?.registration_enabled),
+          registrationMode,
+          allowedEmailDomains: normalizeDomainList(settings[0]?.allowed_email_domains)
+        },
+        email,
+        { hasInvite: Boolean(invite) }
+      );
+    } catch (error: any) {
+      return reply.code(403).send({ message: error.message });
     }
 
     const existing = await getUserByEmail(email);
@@ -95,13 +130,35 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     const hash = await bcrypt.hash(password, 12);
 
-    const result = await execute(
-      `INSERT INTO users (email, password_hash, role, language, theme, twofa_method)
-       VALUES (?, ?, 'user', 'en', 'light', 'none')`,
-      [email, hash]
-    );
+    const connection = await db.getConnection();
+    let insertId = 0;
+    try {
+      await connection.beginTransaction();
+      const [result] = await connection.execute<any>(
+        `INSERT INTO users (email, password_hash, role, language, theme, twofa_method)
+         VALUES (?, ?, 'user', 'en', 'light', 'none')`,
+        [email, hash]
+      );
+      insertId = Number(result.insertId);
 
-    const created = await getUserById(Number(result.insertId));
+      if (invite) {
+        await connection.execute(
+          `UPDATE registration_invites
+           SET used_at = UTC_TIMESTAMP(), used_by_user_id = ?
+           WHERE id = ? AND used_at IS NULL`,
+          [insertId, invite.id]
+        );
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    const created = await getUserById(insertId);
     if (!created) {
       return reply.code(500).send({ message: 'User creation failed' });
     }
@@ -192,6 +249,15 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       };
     }
 
+    if (user.twofa_method === 'totp' && user.encrypted_totp_secret) {
+      return {
+        requires2fa: true,
+        method: 'totp',
+        email: user.email,
+        message: 'TOTP code required'
+      };
+    }
+
     await issueSessionCookie(app, reply, {
       id: user.id,
       email: user.email,
@@ -254,6 +320,124 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
     return { user: sanitizeUser(user) };
   });
+
+  app.post<{ Body: { email: string; code: string } }>('/api/auth/login/verify-totp', async (request, reply) => {
+    try {
+      await guardLogin2faByIp(request.ip);
+    } catch (error: any) {
+      return reply.code(429).send({ message: error.message });
+    }
+
+    const email = request.body.email?.toLowerCase().trim();
+    const code = request.body.code?.trim();
+
+    if (!email || !code) {
+      return reply.code(400).send({ message: 'Missing email or code' });
+    }
+
+    const user = await getUserByEmail(email);
+    if (!user || !user.encrypted_totp_secret) {
+      return reply.code(401).send({ message: 'Invalid 2FA code' });
+    }
+
+    const secret = decryptForUser(user.encrypted_totp_secret, user.password_hash, user.id);
+    if (!verifyTotpCode(secret, code)) {
+      return reply.code(401).send({ message: 'Invalid 2FA code' });
+    }
+
+    await issueSessionCookie(app, reply, {
+      id: user.id,
+      email: user.email,
+      role: user.role
+    });
+
+    await execute(
+      "INSERT INTO logs (user_id, type, details) VALUES (?, 'login', JSON_OBJECT('method', 'totp'))",
+      [user.id]
+    );
+
+    return { user: sanitizeUser(user) };
+  });
+
+  app.post<{ Body: { email: string; password: string; recoveryCode: string } }>(
+    '/api/auth/login/recovery',
+    async (request, reply) => {
+      try {
+        await guardLogin2faByIp(request.ip);
+      } catch (error: any) {
+        return reply.code(429).send({ message: error.message });
+      }
+
+      const email = request.body.email?.toLowerCase().trim();
+      const password = request.body.password;
+      const recoveryCode = request.body.recoveryCode?.trim();
+
+      if (!email || !password || !recoveryCode) {
+        return reply.code(400).send({ message: 'Missing email, password or recovery code' });
+      }
+
+      const user = await getUserByEmail(email);
+      if (!user || !user.is_active) {
+        return reply.code(401).send({ message: 'Invalid credentials' });
+      }
+
+      const validPassword = await bcrypt.compare(password, user.password_hash);
+      if (!validPassword) {
+        return reply.code(401).send({ message: 'Invalid credentials' });
+      }
+
+      const recoveryRows = await queryRows<{ id: number }[]>(
+        `SELECT id
+         FROM user_recovery_codes
+         WHERE user_id = ?
+           AND code_hash = ?
+           AND used_at IS NULL
+         LIMIT 1`,
+        [user.id, hashRecoveryCode(recoveryCode)]
+      );
+
+      const recoveryRow = recoveryRows[0];
+      if (!recoveryRow) {
+        return reply.code(401).send({ message: 'Invalid recovery code' });
+      }
+
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.execute('DELETE FROM user_recovery_codes WHERE user_id = ?', [user.id]);
+        await connection.execute(
+          "UPDATE users SET twofa_method = 'none', encrypted_totp_secret = NULL WHERE id = ?",
+          [user.id]
+        );
+        await connection.execute('DELETE FROM user_passkeys WHERE user_id = ?', [user.id]);
+        await connection.execute('DELETE FROM pending_telegram_2fa WHERE user_id = ?', [user.id]);
+        await connection.execute('DELETE FROM pending_totp_setups WHERE user_id = ?', [user.id]);
+        await connection.execute(
+          "INSERT INTO logs (user_id, type, details) VALUES (?, 'system', JSON_OBJECT('event', 'recovery_code_used'))",
+          [user.id]
+        );
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+
+      const refreshedUser = await getUserById(user.id);
+      if (!refreshedUser) {
+        return reply.code(500).send({ message: 'User not found after recovery login' });
+      }
+
+      await issueSessionCookie(app, reply, {
+        id: refreshedUser.id,
+        email: refreshedUser.email,
+        role: refreshedUser.role
+      });
+
+      return { user: sanitizeUser(refreshedUser) };
+    }
+  );
 
   app.post('/api/auth/logout', { preHandler: app.authenticate }, async (_request, reply) => {
     clearSessionCookie(reply);
@@ -467,75 +651,141 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
-  app.post<{ Body: { email: string } }>('/api/auth/webauthn/login/options', async (request, reply) => {
+  app.post<{ Body: { email?: string } }>('/api/auth/webauthn/login/options', async (request, reply) => {
     const email = request.body.email?.toLowerCase().trim();
-    if (!email) {
-      return reply.code(400).send({ message: 'Email is required' });
+    let userId: number | null = null;
+    let credentialIds: string[] = [];
+
+    if (email) {
+      const user = await getUserByEmail(email);
+      if (!user) {
+        return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
+      }
+
+      const creds = await queryRows<{ credential_id: string }[]>(
+        'SELECT credential_id FROM user_passkeys WHERE user_id = ?',
+        [user.id]
+      );
+
+      if (creds.length === 0) {
+        return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
+      }
+
+      userId = user.id;
+      credentialIds = creds.map((c) => c.credential_id);
     }
 
-    const user = await getUserByEmail(email);
-    if (!user) {
-      return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
-    }
-
-    const creds = await queryRows<{ credential_id: string }[]>(
-      'SELECT credential_id FROM user_passkeys WHERE user_id = ?',
-      [user.id]
-    );
-
-    if (creds.length === 0) {
-      return reply.code(400).send({ message: 'Passkey login is unavailable for this account' });
-    }
-
-    const options = await createAuthenticationOptions(creds.map((c) => c.credential_id));
+    const options = await createAuthenticationOptions(credentialIds);
 
     await execute(
       `INSERT INTO webauthn_challenges (user_id, challenge, flow, expires_at)
        VALUES (?, ?, 'login', DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 MINUTE))`,
-      [user.id, options.challenge]
+      [userId, options.challenge]
     );
 
     return options;
   });
 
-  app.post<{ Body: { email: string; response: any } }>('/api/auth/webauthn/login/verify', async (request, reply) => {
+  app.post<{ Body: { email?: string; challenge?: string; response: any } }>('/api/auth/webauthn/login/verify', async (request, reply) => {
     const email = request.body.email?.toLowerCase().trim();
-    if (!email) {
-      return reply.code(400).send({ message: 'Email is required' });
-    }
-
-    const user = await getUserByEmail(email);
-    if (!user) {
+    const responseId = request.body.response?.id;
+    if (!responseId) {
       return reply.code(400).send({ message: 'Passkey login failed' });
     }
 
-    const challenges = await queryRows<{ id: number; challenge: string }[]>(
-      `SELECT id, challenge
-       FROM webauthn_challenges
-       WHERE user_id = ? AND flow = 'login' AND expires_at > UTC_TIMESTAMP()
-       ORDER BY id DESC
-       LIMIT 1`,
-      [user.id]
-    );
+    let user = null;
+    let credential:
+      | {
+          credential_id: string;
+          public_key: string;
+          counter: number;
+          transports: string | null;
+        }
+      | undefined;
+
+    if (email) {
+      user = await getUserByEmail(email);
+      if (!user) {
+        return reply.code(400).send({ message: 'Passkey login failed' });
+      }
+
+      const creds = await queryRows<{
+        credential_id: string;
+        public_key: string;
+        counter: number;
+        transports: string | null;
+      }[]>(
+        'SELECT credential_id, public_key, counter, transports FROM user_passkeys WHERE user_id = ? AND credential_id = ? LIMIT 1',
+        [user.id, responseId]
+      );
+
+      credential = creds[0];
+    } else {
+      const rows = await queryRows<({
+        credential_id: string;
+        public_key: string;
+        counter: number;
+        transports: string | null;
+      } & {
+        id: number;
+        email: string;
+        role: 'user' | 'admin';
+        language: string;
+        theme: 'light' | 'dark';
+        telegram_user_id: string | null;
+        telegram_username: string | null;
+        twofa_method: 'none' | 'telegram' | 'webauthn' | 'totp';
+        encrypted_totp_secret: string | null;
+        api_key_last4: string | null;
+        is_active: number;
+        password_hash: string;
+      })[]>(
+        `SELECT u.*, p.credential_id, p.public_key, p.counter, p.transports
+         FROM user_passkeys p
+         JOIN users u ON u.id = p.user_id
+         WHERE p.credential_id = ?
+         LIMIT 1`,
+        [responseId]
+      );
+
+      const row = rows[0];
+      if (row) {
+        user = row;
+        credential = row;
+      }
+    }
+
+    if (!user || !credential) {
+      return reply.code(400).send({ message: 'Passkey login failed' });
+    }
+
+    if (!user.is_active) {
+      return reply.code(401).send({ message: 'Unauthorized' });
+    }
+
+    const challengeParams = request.body.challenge
+      ? [user.id, request.body.challenge]
+      : [user.id];
+    const challengeQuery = request.body.challenge
+      ? `SELECT id, challenge
+         FROM webauthn_challenges
+         WHERE flow = 'login'
+           AND expires_at > UTC_TIMESTAMP()
+           AND (user_id = ? OR user_id IS NULL)
+           AND challenge = ?
+         ORDER BY id DESC
+         LIMIT 1`
+      : `SELECT id, challenge
+         FROM webauthn_challenges
+         WHERE user_id = ? AND flow = 'login' AND expires_at > UTC_TIMESTAMP()
+         ORDER BY id DESC
+         LIMIT 1`;
+
+    const challenges = await queryRows<{ id: number; challenge: string }[]>(challengeQuery, challengeParams);
 
     const challenge = challenges[0];
     if (!challenge) {
       return reply.code(400).send({ message: 'Challenge expired' });
-    }
-
-    const creds = await queryRows<{
-      credential_id: string;
-      public_key: string;
-      counter: number;
-      transports: string | null;
-    }[]>(
-      'SELECT credential_id, public_key, counter, transports FROM user_passkeys WHERE user_id = ? AND credential_id = ? LIMIT 1',
-      [user.id, request.body.response.id]
-    );
-
-    const credential = creds[0];
-    if (!credential) {
-      return reply.code(400).send({ message: 'Credential not found' });
     }
 
     const verification = await verifyAuthentication({

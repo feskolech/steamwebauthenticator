@@ -43,14 +43,17 @@ export async function verifyRegistration(params: {
 }
 
 export async function createAuthenticationOptions(credentialIds: string[]): Promise<any> {
-  return generateAuthenticationOptions({
+  const options: Parameters<typeof generateAuthenticationOptions>[0] = {
     rpID,
     timeout: 60000,
-    userVerification: 'preferred',
-    allowCredentials: credentialIds.map((id) => ({
-      id
-    }))
-  });
+    userVerification: 'preferred'
+  };
+
+  if (credentialIds.length > 0) {
+    options.allowCredentials = credentialIds.map((id) => ({ id }));
+  }
+
+  return generateAuthenticationOptions(options);
 }
 
 export async function verifyAuthentication(params: {

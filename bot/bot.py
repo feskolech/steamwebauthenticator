@@ -109,7 +109,10 @@ async def get_user_language(telegram_user_id: int | str) -> str:
 
 async def call_backend(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     url = f"{BACKEND_URL.rstrip('/')}{path}"
-    headers = {'x-telegram-bot-token': BOT_TOKEN}
+    headers = {
+        'x-telegram-bot-token': BOT_TOKEN,
+        'x-forwarded-proto': 'https',
+    }
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
         async with session.request(method, url, json=payload, headers=headers) as response:

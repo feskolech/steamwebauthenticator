@@ -1,11 +1,14 @@
 import { apiClient } from './client';
 import type {
   Account,
+  AdminLogItem,
   AccountFolder,
   AccountTag,
   ConfirmationQueueItem,
   LogItem,
   NotificationItem,
+  RegistrationInvite,
+  UserWebhook,
   User
 } from '../types';
 
@@ -15,7 +18,7 @@ export const authApi = {
     apiClient.get<{ token: string; minFillMs: number; expiresInSec: number }>('/api/auth/register/challenge'),
   reauthenticate: (password: string) => apiClient.post<{ success: boolean }>('/api/auth/reauth', { password }),
   login: (email: string, password: string) =>
-    apiClient.post<{ user?: User; requires2fa?: boolean; method?: string; message?: string }>('/api/auth/login', {
+    apiClient.post<{ user?: User; requires2fa?: boolean; method?: 'telegram' | 'totp'; message?: string }>('/api/auth/login', {
       email,
       password
     }),
@@ -23,6 +26,7 @@ export const authApi = {
     email: string,
     password: string,
     registrationChallenge: string,
+    inviteCode?: string,
     company = '',
     turnstileToken?: string
   ) =>
@@ -30,11 +34,16 @@ export const authApi = {
       email,
       password,
       registrationChallenge,
+      inviteCode,
       company,
       turnstileToken
     }),
   verifyTelegram2fa: (email: string, code: string) =>
     apiClient.post<{ user: User }>('/api/auth/login/verify-telegram', { email, code }),
+  verifyTotp2fa: (email: string, code: string) =>
+    apiClient.post<{ user: User }>('/api/auth/login/verify-totp', { email, code }),
+  verifyRecoveryCode: (email: string, password: string, recoveryCode: string) =>
+    apiClient.post<{ user: User }>('/api/auth/login/recovery', { email, password, recoveryCode }),
   logout: () => apiClient.post<{ success: boolean }>('/api/auth/logout'),
   startTelegramOAuth: () =>
     apiClient.post<{
@@ -51,10 +60,14 @@ export const authApi = {
         'x-telegram-poll-token': token
       }
     }),
-  webauthnLoginOptions: (email: string) =>
-    apiClient.post<Record<string, unknown>>('/api/auth/webauthn/login/options', { email }),
-  webauthnLoginVerify: (email: string, response: unknown) =>
-    apiClient.post<{ user: User }>('/api/auth/webauthn/login/verify', { email, response }),
+  webauthnLoginOptions: (email?: string) =>
+    apiClient.post<Record<string, unknown>>('/api/auth/webauthn/login/options', email ? { email } : {}),
+  webauthnLoginVerify: (response: unknown, options?: { email?: string; challenge?: string }) =>
+    apiClient.post<{ user: User }>('/api/auth/webauthn/login/verify', {
+      response,
+      email: options?.email,
+      challenge: options?.challenge
+    }),
   webauthnRegisterOptions: () => apiClient.post<Record<string, unknown>>('/api/auth/webauthn/register/options'),
   webauthnRegisterVerify: (response: unknown) =>
     apiClient.post<{ verified: boolean }>('/api/auth/webauthn/register/verify', { response })
@@ -178,8 +191,9 @@ export const settingsApi = {
     apiClient.get<{
       language: 'en' | 'ru';
       theme: 'light' | 'dark';
-      steamUserId: string | null;
-      twofaMethod: 'none' | 'telegram' | 'webauthn';
+      twofaMethod: 'none' | 'telegram' | 'webauthn' | 'totp';
+      hasTotpSecret: boolean;
+      hasRecoveryCodes: boolean;
       telegramLinked: boolean;
       telegramUsername: string | null;
       telegramNotifyLoginCodes: boolean;
@@ -188,14 +202,26 @@ export const settingsApi = {
   update: (payload: {
     language?: 'en' | 'ru';
     theme?: 'light' | 'dark';
-    steamUserId?: string | null;
-    twofaMethod?: 'none' | 'telegram' | 'webauthn';
+    twofaMethod?: 'none' | 'telegram' | 'webauthn' | 'totp';
     telegramNotifyLoginCodes?: boolean;
   }) => apiClient.patch<{ success: boolean }>('/api/settings', payload),
+  startTotpSetup: () =>
+    apiClient.post<{ secret: string; otpauthUrl: string; qrCodeDataUrl: string; expiresInSec: number }>('/api/settings/totp/setup'),
+  verifyTotpSetup: (code: string) => apiClient.post<{ success: boolean }>('/api/settings/totp/verify', { code }),
+  regenerateRecoveryCodes: () => apiClient.post<{ codes: string[] }>('/api/settings/recovery-codes/regenerate'),
   generateTelegramCode: () =>
     apiClient.post<{ code: string; command: string; expiresInSec: number }>('/api/settings/telegram/link-code'),
   unlinkTelegram: () => apiClient.delete<{ success: boolean }>('/api/settings/telegram'),
-  regenerateApiKey: () => apiClient.post<{ apiKey: string }>('/api/settings/api-key')
+  regenerateApiKey: () => apiClient.post<{ apiKey: string }>('/api/settings/api-key'),
+  webhooks: () => apiClient.get<{ items: UserWebhook[] }>('/api/settings/webhooks'),
+  createWebhook: (payload: {
+    name: string;
+    url: string;
+    targetType: 'generic' | 'discord';
+    eventTypes: string[];
+  }) => apiClient.post<{ webhook: UserWebhook }>('/api/settings/webhooks', payload),
+  deleteWebhook: (webhookId: number) => apiClient.delete<{ success: boolean }>(`/api/settings/webhooks/${webhookId}`),
+  testWebhook: (webhookId: number) => apiClient.post<{ success: boolean }>(`/api/settings/webhooks/${webhookId}/test`)
 };
 
 export const logApi = {
@@ -211,13 +237,29 @@ export const logApi = {
 
 export const adminApi = {
   overview: () => apiClient.get<{ users: number; accounts: number }>('/api/admin/overview'),
-  settings: () => apiClient.get<{ registrationEnabled: boolean; updatedAt: string | null }>('/api/admin/settings'),
-  updateSettings: (registrationEnabled: boolean) =>
-    apiClient.patch<{ success: boolean }>('/api/admin/settings', { registrationEnabled }),
+  settings: () =>
+    apiClient.get<{
+      registrationEnabled: boolean;
+      registrationMode: 'open' | 'disabled' | 'domain_allowlist';
+      registrationMode: 'open' | 'disabled' | 'domain_allowlist' | 'invite_only';
+      allowedEmailDomains: string[];
+      updatedAt: string | null;
+    }>('/api/admin/settings'),
+  updateSettings: (payload: {
+    registrationEnabled: boolean;
+    registrationMode: 'open' | 'disabled' | 'domain_allowlist' | 'invite_only';
+    allowedEmailDomains?: string[];
+  }) => apiClient.patch<{ success: boolean }>('/api/admin/settings', payload),
   users: () =>
     apiClient.get<{ items: Array<{ id: number; email: string; role: string; twofaMethod: string }> }>('/api/admin/users')
   ,
-  deleteUser: (userId: number) => apiClient.delete<{ success: boolean }>(`/api/admin/users/${userId}`)
+  invites: () => apiClient.get<{ items: RegistrationInvite[] }>('/api/admin/invites'),
+  createInvite: (payload?: { note?: string; expiresInDays?: number }) =>
+    apiClient.post<{ invite: { id: number; code: string; note: string | null; expiresInDays: number } }>('/api/admin/invites', payload ?? {}),
+  deleteInvite: (inviteId: number) => apiClient.delete<{ success: boolean }>(`/api/admin/invites/${inviteId}`),
+  deleteUser: (userId: number) => apiClient.delete<{ success: boolean }>(`/api/admin/users/${userId}`),
+  logs: (params?: { scope?: 'all' | 'steam' | 'auth' | 'security'; userId?: number; accountId?: number; limit?: number }) =>
+    apiClient.get<{ items: AdminLogItem[] }>('/api/admin/logs', { params })
 };
 
 export const notificationApi = {
