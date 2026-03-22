@@ -5,6 +5,7 @@ import { decryptForUser } from '../utils/crypto';
 import { decodeAccountSession, encodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, respondToConfirmationWithSessionRecovery } from '../services/steamService';
+import { clearSessionExpiredNotifications } from '../services/sessionNotificationService';
 import { wsHub } from '../services/wsHub';
 
 async function botAuth(request: any, reply: any): Promise<void> {
@@ -247,6 +248,7 @@ const botRoutes: FastifyPluginAsync = async (app) => {
          ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
         [request.body.accountId, encodeAccountSession(response.session, user.password_hash, user.id)]
       );
+      await clearSessionExpiredNotifications(user.id, request.body.accountId);
     }
 
     if (!response.success) {
@@ -336,6 +338,7 @@ const botRoutes: FastifyPluginAsync = async (app) => {
          ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
         [item.account_id, encodeAccountSession(response.session, user.password_hash, user.id)]
       );
+      await clearSessionExpiredNotifications(user.id, item.account_id);
     }
 
     if (!response.success) {

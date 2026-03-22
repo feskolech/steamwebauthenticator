@@ -25,8 +25,23 @@ export type Account = {
   autoConfirmDelaySec: number;
   lastCode: string | null;
   lastActive: string | null;
+  folderId?: number | null;
+  folderName?: string | null;
+  tags?: AccountTag[];
   hasRecoveryCode?: boolean;
   createdAt?: string;
+};
+
+export type AccountFolder = {
+  id: number;
+  name: string;
+  createdAt: string;
+};
+
+export type AccountTag = {
+  id: number;
+  name: string;
+  createdAt: string;
 };
 
 export type LogItem = {

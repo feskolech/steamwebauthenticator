@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Download, KeyRound, Smartphone, Trash2, Upload } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { accountApi } from '../api';
-import type { Account } from '../types';
+import { accountApi, accountOrganizationApi } from '../api';
+import type { Account, AccountFolder, AccountTag } from '../types';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
@@ -26,6 +26,8 @@ type PendingEnrollment = {
 export function AccountsPage() {
   const { t } = useTranslation();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [folders, setFolders] = useState<AccountFolder[]>([]);
+  const [tags, setTags] = useState<AccountTag[]>([]);
   const [liveCodes, setLiveCodes] = useState<Record<number, string>>({});
   const [secondsLeft, setSecondsLeft] = useState(() => {
     const nowSec = Math.floor(Date.now() / 1000);
@@ -36,6 +38,12 @@ export function AccountsPage() {
   const [maFile, setMaFile] = useState<File | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newTagName, setNewTagName] = useState('');
+  const [folderFilter, setFolderFilter] = useState('all');
+  const [tagFilter, setTagFilter] = useState('all');
+  const [organizationBusy, setOrganizationBusy] = useState(false);
+  const [organizationError, setOrganizationError] = useState<string | null>(null);
 
   const [steamAlias, setSteamAlias] = useState('');
   const [steamAccountName, setSteamAccountName] = useState('');
@@ -68,8 +76,13 @@ export function AccountsPage() {
   });
 
   const load = async () => {
-    const response = await accountApi.list();
-    setAccounts(response.items);
+    const [accountResponse, organizationResponse] = await Promise.all([
+      accountApi.list(),
+      accountOrganizationApi.get()
+    ]);
+    setAccounts(accountResponse.items);
+    setFolders(organizationResponse.folders);
+    setTags(organizationResponse.tags);
   };
 
   useEffect(() => {
@@ -133,6 +146,86 @@ export function AccountsPage() {
     setCachedCodes(next);
     localStorage.setItem(OFFLINE_CODES_KEY, JSON.stringify(next));
   };
+
+  const createFolder = async () => {
+    if (!newFolderName.trim()) {
+      return;
+    }
+
+    setOrganizationBusy(true);
+    setOrganizationError(null);
+    try {
+      await accountOrganizationApi.createFolder(newFolderName.trim());
+      setNewFolderName('');
+      await load();
+    } catch (error: any) {
+      setOrganizationError(error?.response?.data?.message || error?.message || t('accounts.organizationSaveFailed'));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  };
+
+  const createTag = async () => {
+    if (!newTagName.trim()) {
+      return;
+    }
+
+    setOrganizationBusy(true);
+    setOrganizationError(null);
+    try {
+      await accountOrganizationApi.createTag(newTagName.trim());
+      setNewTagName('');
+      await load();
+    } catch (error: any) {
+      setOrganizationError(error?.response?.data?.message || error?.message || t('accounts.organizationSaveFailed'));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  };
+
+  const deleteFolder = async (folderId: number) => {
+    setOrganizationBusy(true);
+    setOrganizationError(null);
+    try {
+      await accountOrganizationApi.deleteFolder(folderId);
+      if (folderFilter === String(folderId)) {
+        setFolderFilter('all');
+      }
+      await load();
+    } catch (error: any) {
+      setOrganizationError(error?.response?.data?.message || error?.message || t('accounts.organizationSaveFailed'));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  };
+
+  const deleteTag = async (tagId: number) => {
+    setOrganizationBusy(true);
+    setOrganizationError(null);
+    try {
+      await accountOrganizationApi.deleteTag(tagId);
+      if (tagFilter === String(tagId)) {
+        setTagFilter('all');
+      }
+      await load();
+    } catch (error: any) {
+      setOrganizationError(error?.response?.data?.message || error?.message || t('accounts.organizationSaveFailed'));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  };
+
+  const filteredAccounts = accounts.filter((account) => {
+    if (folderFilter !== 'all' && String(account.folderId ?? 'none') !== folderFilter) {
+      return false;
+    }
+
+    if (tagFilter !== 'all' && !(account.tags ?? []).some((tag) => String(tag.id) === tagFilter)) {
+      return false;
+    }
+
+    return true;
+  });
 
   const formatEnrollError = (data: any, fallback: string) => {
     if (!data) {
@@ -412,6 +505,102 @@ export function AccountsPage() {
       </Card>
 
       <Card>
+        <h2 className="mb-3 text-base font-semibold">{t('accounts.organizationTitle')}</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">{t('accounts.folderLabel')}</div>
+            <div className="flex gap-2">
+              <Input
+                placeholder={t('accounts.newFolderPlaceholder')}
+                value={newFolderName}
+                onChange={(event) => setNewFolderName(event.target.value)}
+              />
+              <Button disabled={organizationBusy || !newFolderName.trim()} onClick={() => void createFolder()}>
+                {t('accounts.createFolder')}
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {folders.map((folder) => (
+                <div key={folder.id} className="flex items-center gap-1 rounded-full bg-green-100 px-2 py-1 text-xs text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                  <span>{folder.name}</span>
+                  <button
+                    type="button"
+                    className="font-semibold"
+                    onClick={() => {
+                      void deleteFolder(folder.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {folders.length === 0 && <div className="text-sm text-base-500">{t('accounts.noFolders')}</div>}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">{t('accounts.tagLabel')}</div>
+            <div className="flex gap-2">
+              <Input
+                placeholder={t('accounts.newTagPlaceholder')}
+                value={newTagName}
+                onChange={(event) => setNewTagName(event.target.value)}
+              />
+              <Button disabled={organizationBusy || !newTagName.trim()} onClick={() => void createTag()}>
+                {t('accounts.createTag')}
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {tags.map((tag) => (
+                <div key={tag.id} className="flex items-center gap-1 rounded-full bg-base-200 px-2 py-1 text-xs text-base-800 dark:bg-base-700 dark:text-base-100">
+                  <span>{tag.name}</span>
+                  <button
+                    type="button"
+                    className="font-semibold"
+                    onClick={() => {
+                      void deleteTag(tag.id);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {tags.length === 0 && <div className="text-sm text-base-500">{t('accounts.noTags')}</div>}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <label className="text-sm">
+            <div className="mb-1">{t('accounts.filterByFolder')}</div>
+            <select className="input-base" value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)}>
+              <option value="all">{t('accounts.allFolders')}</option>
+              <option value="none">{t('accounts.unassignedFolder')}</option>
+              {folders.map((folder) => (
+                <option key={folder.id} value={String(folder.id)}>
+                  {folder.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-sm">
+            <div className="mb-1">{t('accounts.filterByTag')}</div>
+            <select className="input-base" value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+              <option value="all">{t('accounts.allTags')}</option>
+              {tags.map((tag) => (
+                <option key={tag.id} value={String(tag.id)}>
+                  {tag.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {organizationError && <div className="mt-2 text-sm text-danger">{organizationError}</div>}
+      </Card>
+
+      <Card>
         <div className="overflow-x-auto">
           <div className="mb-2 text-xs text-base-500">{t('accounts.liveCodeTimer', { seconds: secondsLeft })}</div>
           <table className="w-full text-left text-sm">
@@ -425,9 +614,20 @@ export function AccountsPage() {
               </tr>
             </thead>
             <tbody>
-              {accounts.map((account) => (
+              {filteredAccounts.map((account) => (
                 <tr key={account.id} className="border-t border-base-200/80 dark:border-base-700/70">
-                  <td className="px-2 py-3 font-medium">{account.alias}</td>
+                  <td className="px-2 py-3">
+                    <div className="font-medium">{account.alias}</div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {account.folderName && <Badge variant="success">{account.folderName}</Badge>}
+                      {(account.tags ?? []).map((tag) => (
+                        <Badge key={tag.id}>{tag.name}</Badge>
+                      ))}
+                      {!account.folderName && (account.tags ?? []).length === 0 && (
+                        <span className="text-xs text-base-500">{t('accounts.unassignedFolder')}</span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-2 py-3 text-xs">{account.accountName}</td>
                   <td className="px-2 py-3 text-xs">{account.steamid ?? '-'}</td>
                   <td className="px-2 py-3">
@@ -484,7 +684,7 @@ export function AccountsPage() {
                   </td>
                 </tr>
               ))}
-              {accounts.length === 0 && (
+              {filteredAccounts.length === 0 && (
                 <tr>
                   <td className="px-2 py-4 text-sm text-base-500" colSpan={5}>
                     {t('common.empty')}

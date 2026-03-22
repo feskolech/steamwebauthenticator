@@ -6,6 +6,7 @@ import { decodeAccountSession, encodeAccountSession } from '../utils/accountSess
 import { parseMaFile } from '../utils/mafile';
 import {
   generateSteamCode,
+  hasAutomaticSessionRecovery,
   listConfirmationsWithSessionRecovery,
   respondToConfirmationWithSessionRecovery
 } from '../services/steamService';
@@ -18,6 +19,7 @@ import {
 } from '../services/telegramCopy';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
+import { buildSessionExpiredMessage, clearSessionExpiredNotifications } from '../services/sessionNotificationService';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -137,6 +139,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
     );
 
     for (const account of accounts) {
+      let automaticRecoveryAvailable = false;
       try {
         const ma = parseMaFile(
           decryptForUser(account.encrypted_ma, account.password_hash, Number(account.user_id))
@@ -150,6 +153,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
         const session = sessions[0]
           ? decodeAccountSession(sessions[0].session_json, account.password_hash, Number(account.user_id))
           : null;
+        automaticRecoveryAvailable = hasAutomaticSessionRecovery(ma, session);
         const confirmationResult = await listConfirmationsWithSessionRecovery(ma, session);
         const confirmations = confirmationResult.confirmations;
         const nextSession = confirmationResult.session;
@@ -161,6 +165,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
              ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
             [account.id, encodeAccountSession(nextSession, account.password_hash, Number(account.user_id))]
           );
+          await clearSessionExpiredNotifications(Number(account.user_id), Number(account.id));
         }
         const byKind: Record<'trade' | 'login' | 'other', Set<string>> = {
           trade: new Set(),
@@ -297,6 +302,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
                  ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
                 [account.id, encodeAccountSession(response.session, account.password_hash, Number(account.user_id))]
               );
+              await clearSessionExpiredNotifications(Number(account.user_id), Number(account.id));
             }
 
             if (!response.success) {
@@ -336,7 +342,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             const payload = {
               accountId: account.id,
               accountAlias: account.alias,
-              message: 'Steam session expired. Open account details and update session.'
+              message: buildSessionExpiredMessage(automaticRecoveryAvailable, account.language)
             };
 
             await execute(

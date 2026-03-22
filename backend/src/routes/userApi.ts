@@ -4,6 +4,7 @@ import { decryptForUser } from '../utils/crypto';
 import { decodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
 import { generateSteamCode, respondToConfirmation } from '../services/steamService';
+import { listAccountTagsByAccountIds } from '../services/accountOrganizationService';
 
 async function getAccountForUser(userId: number, accountId: number): Promise<any> {
   const rows = await queryRows<any[]>(
@@ -38,11 +39,19 @@ async function getSession(accountId: number, passwordHash: string, userId: numbe
 const userApiRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/user/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
-      `SELECT id, alias, account_name, steamid, auto_confirm, auto_confirm_trades, auto_confirm_logins, auto_confirm_delay_sec, last_code, last_active
-       FROM user_accounts
-       WHERE user_id = ?
-       ORDER BY created_at DESC`,
+      `SELECT a.id, a.alias, a.account_name, a.steamid, a.auto_confirm, a.auto_confirm_trades,
+              a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active,
+              a.folder_id, f.name AS folder_name
+       FROM user_accounts a
+       LEFT JOIN account_folders f ON f.id = a.folder_id AND f.user_id = a.user_id
+       WHERE a.user_id = ?
+       ORDER BY a.created_at DESC`,
       [request.user.id]
+    );
+
+    const tagMap = await listAccountTagsByAccountIds(
+      request.user.id,
+      accounts.map((item) => Number(item.id))
     );
 
     return {
@@ -55,6 +64,9 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
         autoConfirmTrades: Boolean(item.auto_confirm_trades ?? item.auto_confirm),
         autoConfirmLogins: Boolean(item.auto_confirm_logins),
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
+        folderId: item.folder_id,
+        folderName: item.folder_name,
+        tags: tagMap.get(Number(item.id)) ?? [],
         lastCode: item.last_code,
         lastActive: item.last_active
       }))

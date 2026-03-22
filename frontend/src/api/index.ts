@@ -1,5 +1,13 @@
 import { apiClient } from './client';
-import type { Account, ConfirmationQueueItem, LogItem, NotificationItem, User } from '../types';
+import type {
+  Account,
+  AccountFolder,
+  AccountTag,
+  ConfirmationQueueItem,
+  LogItem,
+  NotificationItem,
+  User
+} from '../types';
 
 export const authApi = {
   me: () => apiClient.get<{ user: User }>('/api/auth/me'),
@@ -126,6 +134,20 @@ export const accountApi = {
   ) => apiClient.post<{ success: boolean }>(`/api/accounts/${accountId}/session`, data),
   reconnect: (accountId: number, payload: { password: string; guardCode?: string }) =>
     apiClient.post<{ success: boolean; steamid: string }>(`/api/accounts/${accountId}/reconnect`, payload)
+};
+
+export const accountOrganizationApi = {
+  get: () => apiClient.get<{ folders: AccountFolder[]; tags: AccountTag[] }>('/api/account-organization'),
+  createFolder: (name: string) => apiClient.post<{ folder: AccountFolder }>('/api/account-folders', { name }),
+  renameFolder: (folderId: number, name: string) =>
+    apiClient.patch<{ folder: AccountFolder }>(`/api/account-folders/${folderId}`, { name }),
+  deleteFolder: (folderId: number) => apiClient.delete<{ success: boolean }>(`/api/account-folders/${folderId}`),
+  createTag: (name: string) => apiClient.post<{ tag: AccountTag }>('/api/account-tags', { name }),
+  renameTag: (tagId: number, name: string) =>
+    apiClient.patch<{ tag: AccountTag }>(`/api/account-tags/${tagId}`, { name }),
+  deleteTag: (tagId: number) => apiClient.delete<{ success: boolean }>(`/api/account-tags/${tagId}`),
+  updateAccount: (accountId: number, payload: { folderId?: number | null; tagIds?: number[] }) =>
+    apiClient.patch<{ success: boolean }>(`/api/accounts/${accountId}/organization`, payload)
 };
 
 export const steamApi = {

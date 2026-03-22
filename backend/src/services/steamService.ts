@@ -141,6 +141,10 @@ function resolveRefreshToken(ma: MaFile, session: SteamSessionState | null): str
   return session?.refreshToken ?? ma.Session?.RefreshToken;
 }
 
+export function hasAutomaticSessionRecovery(ma: MaFile, session: SteamSessionState | null): boolean {
+  return Boolean(resolveRefreshToken(ma, session));
+}
+
 function buildCookieHeader(session: SteamSessionState | null, steamid: string): string {
   const parts: string[] = [
     `steamid=${steamid}`,

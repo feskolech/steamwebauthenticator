@@ -12,6 +12,8 @@ import {
   startSteamEnrollment,
   SteamEnrollmentError
 } from '../services/steamEnrollmentService';
+import { listAccountTagsByAccountIds } from '../services/accountOrganizationService';
+import { clearSessionExpiredNotifications } from '../services/sessionNotificationService';
 
 type AccountRow = {
   id: number;
@@ -28,6 +30,8 @@ type AccountRow = {
   auto_confirm_delay_sec: number;
   last_code: string | null;
   last_active: Date | null;
+  folder_id: number | null;
+  folder_name: string | null;
   created_at: Date;
 };
 
@@ -51,9 +55,10 @@ async function getUserSecret(userId: number): Promise<UserSecretRow> {
 
 async function getAccountByOwner(userId: number, accountId: number): Promise<AccountRow> {
   const rows = await queryRows<AccountRow[]>(
-    `SELECT *
-     FROM user_accounts
-     WHERE id = ? AND user_id = ?
+    `SELECT a.*, f.name AS folder_name
+     FROM user_accounts a
+     LEFT JOIN account_folders f ON f.id = a.folder_id AND f.user_id = a.user_id
+     WHERE a.id = ? AND a.user_id = ?
      LIMIT 1`,
     [accountId, userId]
   );
@@ -69,13 +74,20 @@ async function getAccountByOwner(userId: number, accountId: number): Promise<Acc
 const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
-      `SELECT id, alias, account_name, steamid, source, auto_confirm, auto_confirm_trades, auto_confirm_logins, auto_confirm_delay_sec,
-              last_code, last_active, created_at,
-              IF(encrypted_revocation_code IS NULL, FALSE, TRUE) AS has_recovery_code
-       FROM user_accounts
-       WHERE user_id = ?
-       ORDER BY created_at DESC`,
+      `SELECT a.id, a.alias, a.account_name, a.steamid, a.source, a.auto_confirm, a.auto_confirm_trades,
+              a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active, a.created_at,
+              a.folder_id, f.name AS folder_name,
+              IF(a.encrypted_revocation_code IS NULL, FALSE, TRUE) AS has_recovery_code
+       FROM user_accounts a
+       LEFT JOIN account_folders f ON f.id = a.folder_id AND f.user_id = a.user_id
+       WHERE a.user_id = ?
+       ORDER BY a.created_at DESC`,
       [request.user.id]
+    );
+
+    const tagMap = await listAccountTagsByAccountIds(
+      request.user.id,
+      accounts.map((item) => Number(item.id))
     );
 
     return {
@@ -91,6 +103,9 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
         lastCode: item.last_code,
         lastActive: item.last_active,
+        folderId: item.folder_id,
+        folderName: item.folder_name,
+        tags: tagMap.get(Number(item.id)) ?? [],
         createdAt: item.created_at,
         hasRecoveryCode: Boolean(item.has_recovery_code)
       }))
@@ -135,6 +150,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       try {
         const account = await getAccountByOwner(request.user.id, Number(request.params.accountId));
+        const tagMap = await listAccountTagsByAccountIds(request.user.id, [account.id]);
 
         return {
           id: account.id,
@@ -148,6 +164,9 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
           autoConfirmDelaySec: account.auto_confirm_delay_sec,
           lastCode: account.last_code,
           lastActive: account.last_active,
+          folderId: account.folder_id,
+          folderName: account.folder_name,
+          tags: tagMap.get(account.id) ?? [],
           createdAt: account.created_at,
           hasRecoveryCode: Boolean(account.encrypted_revocation_code)
         };
@@ -510,6 +529,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
        ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
       [accountId, encodeAccountSession(session, user.password_hash, user.id)]
     );
+    await clearSessionExpiredNotifications(request.user.id, accountId);
 
     await execute(
       "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_updated'))",
@@ -581,6 +601,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
          ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
         [accountId, encodeAccountSession(session, user.password_hash, user.id)]
       );
+      await clearSessionExpiredNotifications(request.user.id, accountId);
 
       await execute(
         "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_updated'))",

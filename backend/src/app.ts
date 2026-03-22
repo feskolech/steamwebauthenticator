@@ -11,6 +11,7 @@ import adminRoutes from './routes/admin';
 import userApiRoutes from './routes/userApi';
 import botRoutes from './routes/bot';
 import notificationRoutes from './routes/notifications';
+import accountOrganizationRoutes from './routes/accountOrganization';
 import { wsHub } from './services/wsHub';
 import { getBearerToken, verifySessionToken } from './utils/jwt';
 import { isProd } from './config/env';
@@ -97,6 +98,7 @@ export async function buildApp() {
   await app.register(userApiRoutes);
   await app.register(botRoutes);
   await app.register(notificationRoutes);
+  await app.register(accountOrganizationRoutes);
 
   app.setErrorHandler((error, _request, reply) => {
     app.log.error(error);

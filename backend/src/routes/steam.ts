@@ -17,6 +17,7 @@ import {
 } from '../services/telegramCopy';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
+import { clearSessionExpiredNotifications } from '../services/sessionNotificationService';
 
 type AccountBundle = {
   id: number;
@@ -198,6 +199,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
         if (result.refreshed && result.session) {
           await storeSession(accountId, result.session, account.password_hash, account.user_id);
+          await clearSessionExpiredNotifications(request.user.id, accountId);
         }
 
         const trades = confirmations.filter((c) => c.type === 'trade');
@@ -272,6 +274,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
         if (result.refreshed && result.session) {
           await storeSession(accountId, result.session, account.password_hash, account.user_id);
+          await clearSessionExpiredNotifications(request.user.id, accountId);
         }
 
         const loginConfirms = confirmations.filter((c) => c.type === 'login');
@@ -394,6 +397,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
       if (response.refreshed && response.session) {
         await storeSession(accountId, response.session, account.password_hash, account.user_id);
+        await clearSessionExpiredNotifications(request.user.id, accountId);
       }
 
       if (!response.success) {
@@ -454,6 +458,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
       if (response.refreshed && response.session) {
         await storeSession(accountId, response.session, account.password_hash, account.user_id);
+        await clearSessionExpiredNotifications(request.user.id, accountId);
       }
 
       if (!response.success) {
@@ -514,6 +519,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
       if (response.refreshed && response.session) {
         await storeSession(accountId, response.session, account.password_hash, account.user_id);
+        await clearSessionExpiredNotifications(request.user.id, accountId);
       }
 
       if (!response.success) {
@@ -574,6 +580,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
 
       if (response.refreshed && response.session) {
         await storeSession(accountId, response.session, account.password_hash, account.user_id);
+        await clearSessionExpiredNotifications(request.user.id, accountId);
       }
 
       if (!response.success) {
@@ -620,6 +627,7 @@ const steamRoutes: FastifyPluginAsync = async (app) => {
         `SELECT confirmation_id, nonce, kind, headline, summary, status, created_at, updated_at
          FROM confirmations_cache
          WHERE account_id = ?
+           AND status = 'pending'
          ORDER BY updated_at DESC
          LIMIT 200`,
         [accountId]

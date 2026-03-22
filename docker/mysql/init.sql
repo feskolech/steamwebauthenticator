@@ -28,12 +28,33 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS account_folders (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(48) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_account_folders_user_name (user_id, name),
+  CONSTRAINT fk_account_folders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS account_tags (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  name VARCHAR(48) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_account_tags_user_name (user_id, name),
+  CONSTRAINT fk_account_tags_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS user_accounts (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT UNSIGNED NOT NULL,
   alias VARCHAR(255) NOT NULL,
   account_name VARCHAR(255) NOT NULL,
   steamid VARCHAR(64) NULL,
+  folder_id BIGINT UNSIGNED NULL,
   encrypted_ma LONGTEXT NOT NULL,
   encrypted_revocation_code LONGTEXT NULL,
   source ENUM('mafile', 'credentials') NOT NULL DEFAULT 'mafile',
@@ -45,7 +66,8 @@ CREATE TABLE IF NOT EXISTS user_accounts (
   last_active DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_user_accounts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  CONSTRAINT fk_user_accounts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_user_accounts_folder FOREIGN KEY (folder_id) REFERENCES account_folders(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS account_sessions (
@@ -55,6 +77,15 @@ CREATE TABLE IF NOT EXISTS account_sessions (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT uq_account_sessions_account UNIQUE (account_id),
   CONSTRAINT fk_account_sessions_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS account_tag_assignments (
+  account_id BIGINT UNSIGNED NOT NULL,
+  tag_id BIGINT UNSIGNED NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (account_id, tag_id),
+  CONSTRAINT fk_account_tag_assignments_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE,
+  CONSTRAINT fk_account_tag_assignments_tag FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS logs (

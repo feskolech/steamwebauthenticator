@@ -34,7 +34,55 @@ async function getColumnType(tableName: string, columnName: string): Promise<str
   return rows[0]?.column_type ?? null;
 }
 
+async function hasConstraint(tableName: string, constraintName: string): Promise<boolean> {
+  const rows = await queryRows<{ cnt: number }[]>(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.TABLE_CONSTRAINTS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND CONSTRAINT_NAME = ?`,
+    [tableName, constraintName]
+  );
+
+  return Number(rows[0]?.cnt ?? 0) > 0;
+}
+
 async function ensureSchemaUpgrades(): Promise<void> {
+  await execute(
+    `CREATE TABLE IF NOT EXISTS account_folders (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      name VARCHAR(48) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_account_folders_user_name (user_id, name),
+      CONSTRAINT fk_account_folders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`
+  );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS account_tags (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      name VARCHAR(48) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_account_tags_user_name (user_id, name),
+      CONSTRAINT fk_account_tags_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`
+  );
+
+  await execute(
+    `CREATE TABLE IF NOT EXISTS account_tag_assignments (
+      account_id BIGINT UNSIGNED NOT NULL,
+      tag_id BIGINT UNSIGNED NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (account_id, tag_id),
+      CONSTRAINT fk_account_tag_assignments_account FOREIGN KEY (account_id) REFERENCES user_accounts(id) ON DELETE CASCADE,
+      CONSTRAINT fk_account_tag_assignments_tag FOREIGN KEY (tag_id) REFERENCES account_tags(id) ON DELETE CASCADE
+    )`
+  );
+
   if (!(await hasColumn('user_accounts', 'encrypted_revocation_code'))) {
     await execute(
       'ALTER TABLE user_accounts ADD COLUMN encrypted_revocation_code LONGTEXT NULL AFTER encrypted_ma'
@@ -44,6 +92,16 @@ async function ensureSchemaUpgrades(): Promise<void> {
   if (!(await hasColumn('user_accounts', 'source'))) {
     await execute(
       "ALTER TABLE user_accounts ADD COLUMN source ENUM('mafile', 'credentials') NOT NULL DEFAULT 'mafile' AFTER encrypted_revocation_code"
+    );
+  }
+
+  if (!(await hasColumn('user_accounts', 'folder_id'))) {
+    await execute('ALTER TABLE user_accounts ADD COLUMN folder_id BIGINT UNSIGNED NULL AFTER steamid');
+  }
+
+  if (!(await hasConstraint('user_accounts', 'fk_user_accounts_folder'))) {
+    await execute(
+      'ALTER TABLE user_accounts ADD CONSTRAINT fk_user_accounts_folder FOREIGN KEY (folder_id) REFERENCES account_folders(id) ON DELETE SET NULL'
     );
   }
 

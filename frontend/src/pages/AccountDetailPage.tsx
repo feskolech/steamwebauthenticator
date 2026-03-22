@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { accountApi, authApi, steamApi } from '../api';
+import { accountApi, accountOrganizationApi, authApi, steamApi } from '../api';
 import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/Badge';
 import { Card } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { SensitiveActionModal } from '../components/security/SensitiveActionModal';
-import type { Account, ConfirmationQueueItem } from '../types';
+import type { Account, AccountFolder, AccountTag, ConfirmationQueueItem } from '../types';
 
 export function AccountDetailPage() {
   const { t } = useTranslation();
@@ -15,6 +16,10 @@ export function AccountDetailPage() {
 
   const [account, setAccount] = useState<Account | null>(null);
   const [queue, setQueue] = useState<ConfirmationQueueItem[]>([]);
+  const [folders, setFolders] = useState<AccountFolder[]>([]);
+  const [tags, setTags] = useState<AccountTag[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState<string>('none');
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [steamLoginSecure, setSteamLoginSecure] = useState('');
   const [sessionid, setSessionid] = useState('');
   const [oauthToken, setOauthToken] = useState('');
@@ -28,11 +33,20 @@ export function AccountDetailPage() {
   const [sensitiveModalBusy, setSensitiveModalBusy] = useState(false);
   const [sensitiveModalError, setSensitiveModalError] = useState<string | null>(null);
   const [sensitiveAction, setSensitiveAction] = useState<'session' | 'recovery' | null>(null);
+  const [organizationBusy, setOrganizationBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [accountRes, queueRes] = await Promise.all([accountApi.get(accountId), steamApi.queue(accountId)]);
+    const [accountRes, queueRes, organizationRes] = await Promise.all([
+      accountApi.get(accountId),
+      steamApi.queue(accountId),
+      accountOrganizationApi.get()
+    ]);
     setAccount(accountRes);
     setQueue(queueRes.items);
+    setFolders(organizationRes.folders);
+    setTags(organizationRes.tags);
+    setSelectedFolderId(accountRes.folderId ? String(accountRes.folderId) : 'none');
+    setSelectedTagIds((accountRes.tags ?? []).map((tag) => tag.id));
   }, [accountId]);
 
   useEffect(() => {
@@ -79,6 +93,23 @@ export function AccountDetailPage() {
     }
   };
 
+  const saveOrganization = async () => {
+    setOrganizationBusy(true);
+    setMessage(null);
+    try {
+      await accountOrganizationApi.updateAccount(accountId, {
+        folderId: selectedFolderId === 'none' ? null : Number(selectedFolderId),
+        tagIds: selectedTagIds
+      });
+      await load();
+      setMessage(t('accountDetail.organizationSaved'));
+    } catch (error: any) {
+      setMessage(error?.response?.data?.message || error?.message || t('accountDetail.organizationSaveFailed'));
+    } finally {
+      setOrganizationBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Card>
@@ -86,6 +117,12 @@ export function AccountDetailPage() {
           <div>
             <h1 className="text-xl font-bold">{account.alias}</h1>
             <div className="text-sm text-base-500">{account.steamid ?? t('accountDetail.noSteamId')}</div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {account.folderName && <Badge variant="success">{account.folderName}</Badge>}
+              {(account.tags ?? []).map((tag) => (
+                <Badge key={tag.id}>{tag.name}</Badge>
+              ))}
+            </div>
           </div>
           <div className="flex gap-2">
             <Button
@@ -168,6 +205,58 @@ export function AccountDetailPage() {
             {recoveryCode && <code className="font-mono text-xs">{recoveryCode}</code>}
           </div>
         )}
+      </Card>
+
+      <Card>
+        <h2 className="mb-3 text-base font-semibold">{t('accountDetail.organizationTitle')}</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="text-sm">
+            <div className="mb-1">{t('accountDetail.folderLabel')}</div>
+            <select
+              className="input-base"
+              value={selectedFolderId}
+              onChange={(event) => setSelectedFolderId(event.target.value)}
+            >
+              <option value="none">{t('accountDetail.noFolder')}</option>
+              {folders.map((folder) => (
+                <option key={folder.id} value={String(folder.id)}>
+                  {folder.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="text-sm">
+            <div className="mb-1">{t('accountDetail.tagsLabel')}</div>
+            <div className="flex flex-wrap gap-2">
+              {tags.map((tag) => {
+                const selected = selectedTagIds.includes(tag.id);
+                return (
+                  <Button
+                    key={tag.id}
+                    variant={selected ? 'primary' : 'secondary'}
+                    onClick={() => {
+                      setSelectedTagIds((current) =>
+                        current.includes(tag.id)
+                          ? current.filter((id) => id !== tag.id)
+                          : [...current, tag.id].sort((left, right) => left - right)
+                      );
+                    }}
+                  >
+                    {tag.name}
+                  </Button>
+                );
+              })}
+              {tags.length === 0 && <div className="text-base-500">{t('accountDetail.noTags')}</div>}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <Button disabled={organizationBusy} onClick={() => void saveOrganization()}>
+            {organizationBusy ? t('auth.pleaseWait') : t('accountDetail.saveOrganization')}
+          </Button>
+        </div>
       </Card>
 
       <Card>
