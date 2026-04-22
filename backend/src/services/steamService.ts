@@ -6,7 +6,7 @@ import type { MaFile, SteamSessionState } from '../utils/mafile';
 const { LoginSession } = require('steam-session');
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { HttpClient } = require('steam-session/node_modules/@doctormckay/stdlib/http');
+const { HttpClient } = require('@doctormckay/stdlib/http');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const AuthenticationClient = require('steam-session/dist/AuthenticationClient').default;
 // eslint-disable-next-line @typescript-eslint/no-require-imports

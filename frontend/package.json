@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.2.2",
-    "axios": "^1.8.4",
+    "axios": "^1.15.2",
     "clsx": "^2.1.1",
     "i18next": "^24.2.2",
     "i18next-browser-languagedetector": "^8.0.3",
@@ -48,5 +48,8 @@
     "vite": "^6.2.0",
     "vite-plugin-pwa": "^0.21.1",
     "vitest": "^3.0.8"
+  },
+  "overrides": {
+    "follow-redirects": "^1.16.0"
   }
 }
