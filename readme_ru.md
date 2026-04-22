@@ -42,6 +42,12 @@ openssl rand -hex 32
 make deploy
 ```
 
+Или напрямую через Docker Compose:
+
+```bash
+docker compose up -d --build
+```
+
 Production containers по умолчанию слушают только localhost:
 - Frontend: `127.0.0.1:3100`
 - Backend API + WebSocket: `127.0.0.1:3101`

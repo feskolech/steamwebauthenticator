@@ -42,6 +42,12 @@ Start production containers:
 make deploy
 ```
 
+Or use Docker Compose directly:
+
+```bash
+docker compose up -d --build
+```
+
 Production containers bind to localhost by default:
 - Frontend: `127.0.0.1:3100`
 - Backend API + WebSocket: `127.0.0.1:3101`
