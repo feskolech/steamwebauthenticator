@@ -11,6 +11,58 @@ English version: `README.md`
 - Бот: Aiogram (единый Telegram-бот для всех пользователей)
 - Лицензия: MIT
 
+## Установка в production на VPS
+
+```bash
+git clone git@github.com:feskolech/steamwebauthenticator.git
+cd steamwebauthenticator
+cp .env.example .env
+```
+
+Перед запуском отредактируй `.env`:
+- установи `NODE_ENV=production`
+- задай `APP_URL` как публичный HTTPS origin, например `https://steam.example.com`
+- задай `API_URL` как API path на том же origin, например `https://steam.example.com/api`
+- замени `ADMIN_EMAIL` и `ADMIN_PASSWORD`
+- сгенерируй сильные `JWT_SECRET`, `COOKIE_SECRET` и `ENCRYPTION_KEY`
+- задай пароли MySQL
+- при необходимости задай Telegram bot и Turnstile keys
+
+Сгенерировать сильные secrets:
+
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Запустить production containers:
+
+```bash
+make deploy
+```
+
+Production containers по умолчанию слушают только localhost:
+- Frontend: `127.0.0.1:3100`
+- Backend API + WebSocket: `127.0.0.1:3101`
+
+Поставь внешний Nginx/Caddy/Traefik reverse proxy перед этими портами:
+- `/` -> `http://127.0.0.1:3100`
+- `/api` -> `http://127.0.0.1:3101`
+- `/ws` -> `http://127.0.0.1:3101`
+
+## Локальная разработка
+
+```bash
+cp .env.example .env
+make dev
+```
+
+Открыть:
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:3001`
+- OpenAPI: `http://localhost:3001/api-docs/openapi.json` (включен по умолчанию в dev/test)
+
 ## Почему такой стек
 
 - **Fastify**: меньшие накладные расходы и лучшая производительность для polling/real-time сценариев.
@@ -79,18 +131,6 @@ English version: `README.md`
 ├── README.md
 └── readme_ru.md
 ```
-
-## Быстрый старт
-
-```bash
-cp .env.example .env
-make dev
-```
-
-Открыть:
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:3001`
-- OpenAPI: `http://localhost:3001/api-docs/openapi.json` (включен по умолчанию в dev/test)
 
 ## Make targets
 
@@ -293,18 +333,12 @@ Steam mobile confirmations требуют валидных session tokens (`stea
 ### Logs
 ![Logs](docs/screenshots/logs.png)
 
-## Деплой на VPS
+## Дополнительные заметки по деплою
 
-1. Установи Docker + Docker Compose.
-2. Склонируй репозиторий.
-3. `cp .env.example .env` и задай production secrets.
-4. Поменяй `ADMIN_PASSWORD` с bootstrap default до production запуска.
-5. Настрой `APP_URL` и `API_URL` в соответствии с реальным внешним origin/proxy layout.
-6. При необходимости настрой внешний reverse proxy:
-   - `/` -> frontend `:3000`
-   - `/api` и `/ws` -> backend `:3001`
-7. Если нужна anti-bot registration, задай Cloudflare Turnstile keys в `.env`.
-8. Запусти `make deploy`.
+- Установи Docker + Docker Compose перед запуском `make deploy`.
+- Настрой `APP_URL` и `API_URL` так, чтобы они совпадали с реальным внешним HTTPS origin.
+- Production Compose stack биндингует frontend/backend на localhost host ports `3100` и `3101`.
+- Если нужна anti-bot registration, задай Cloudflare Turnstile keys в `.env`.
 
 Опциональный bundled Nginx proxy:
 

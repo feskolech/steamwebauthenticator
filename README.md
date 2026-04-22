@@ -11,6 +11,58 @@ Russian version: `readme_ru.md`
 - Bot: Aiogram (single Telegram bot for all users)
 - License: MIT
 
+## Production install on VPS
+
+```bash
+git clone git@github.com:feskolech/steamwebauthenticator.git
+cd steamwebauthenticator
+cp .env.example .env
+```
+
+Edit `.env` before starting:
+- set `NODE_ENV=production`
+- set `APP_URL` to your public HTTPS origin, for example `https://steam.example.com`
+- set `API_URL` to the same origin API path, for example `https://steam.example.com/api`
+- replace `ADMIN_EMAIL` and `ADMIN_PASSWORD`
+- generate strong `JWT_SECRET`, `COOKIE_SECRET`, and `ENCRYPTION_KEY`
+- set MySQL passwords
+- optionally set Telegram bot and Turnstile keys
+
+Generate strong secrets:
+
+```bash
+openssl rand -hex 32
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Start production containers:
+
+```bash
+make deploy
+```
+
+Production containers bind to localhost by default:
+- Frontend: `127.0.0.1:3100`
+- Backend API + WebSocket: `127.0.0.1:3101`
+
+Put your external Nginx/Caddy/Traefik reverse proxy in front of these ports:
+- `/` -> `http://127.0.0.1:3100`
+- `/api` -> `http://127.0.0.1:3101`
+- `/ws` -> `http://127.0.0.1:3101`
+
+## Local development
+
+```bash
+cp .env.example .env
+make dev
+```
+
+Open:
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:3001`
+- OpenAPI: `http://localhost:3001/api-docs/openapi.json` (enabled by default in dev/test)
+
 ## Why this stack
 
 - **Fastify**: lower overhead and better throughput for polling/real-time workloads.
@@ -79,18 +131,6 @@ Important:
 ├── README.md
 └── readme_ru.md
 ```
-
-## Quick start
-
-```bash
-cp .env.example .env
-make dev
-```
-
-Open:
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:3001`
-- OpenAPI: `http://localhost:3001/api-docs/openapi.json` (enabled by default in dev/test)
 
 ## Make targets
 
@@ -293,18 +333,12 @@ Internal bot endpoints are under `/api/telegram/bot/*` and protected by header:
 ### Logs
 ![Logs](docs/screenshots/logs.png)
 
-## Deployment on VPS
+## Additional deployment notes
 
-1. Install Docker + Docker Compose.
-2. Clone repository.
-3. `cp .env.example .env` and set production secrets.
-4. Change `ADMIN_PASSWORD` from the bootstrap default before production start.
-5. Configure `APP_URL` and `API_URL` to match your real external origin/proxy layout.
-6. Optionally set external reverse proxy to forward:
-   - `/` -> frontend `:3000`
-   - `/api` and `/ws` -> backend `:3001`
-7. If you want anti-bot registration, configure Cloudflare Turnstile keys in `.env`.
-8. Run `make deploy`.
+- Install Docker + Docker Compose before running `make deploy`.
+- Configure `APP_URL` and `API_URL` to match your real external HTTPS origin.
+- The production Compose stack binds frontend/backend to localhost host ports `3100` and `3101`.
+- If you want anti-bot registration, configure Cloudflare Turnstile keys in `.env`.
 
 Optional bundled Nginx proxy:
 
