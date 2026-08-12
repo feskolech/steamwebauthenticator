@@ -244,6 +244,12 @@ async function ensureSchemaUpgrades(): Promise<void> {
     );
   }
 
+  if (!(await hasColumn('user_accounts', 'auto_confirm_trade_mode'))) {
+    await execute(
+      "ALTER TABLE user_accounts ADD COLUMN auto_confirm_trade_mode ENUM('all', 'incoming_only') NOT NULL DEFAULT 'all' AFTER auto_confirm_trades"
+    );
+  }
+
   if (hasLegacyAutoConfirm && !hasAutoConfirmTrades) {
     await execute(
       `UPDATE user_accounts

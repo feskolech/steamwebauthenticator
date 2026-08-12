@@ -7,6 +7,7 @@ import { parseMaFile } from '../utils/mafile';
 import {
   generateSteamCode,
   hasAutomaticSessionRecovery,
+  isIncomingOnlyTradeOffer,
   listConfirmationsWithSessionRecovery,
   respondToConfirmationWithSessionRecovery
 } from '../services/steamService';
@@ -19,7 +20,13 @@ import {
 } from '../services/telegramCopy';
 import { wsHub } from '../services/wsHub';
 import { sendTelegramMessage } from '../services/telegramService';
-import { buildSessionExpiredMessage, clearSessionExpiredNotifications } from '../services/sessionNotificationService';
+import {
+  buildSessionExpiredMessage,
+  clearSessionExpiredNotifications,
+  hasRecentSessionExpiredLog,
+  isSteamSessionRecoveryFailure,
+  replaceSessionExpiredNotification
+} from '../services/sessionNotificationService';
 import { createUserNotification } from '../services/webhookService';
 
 let timer: NodeJS.Timeout | null = null;
@@ -132,7 +139,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
 
   try {
     const accounts = await queryRows<any[]>(
-      `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm_trades, a.auto_confirm_logins, a.auto_confirm_delay_sec,
+      `SELECT a.id, a.user_id, a.alias, a.encrypted_ma, a.auto_confirm_trades, a.auto_confirm_trade_mode, a.auto_confirm_logins, a.auto_confirm_delay_sec,
               u.password_hash, u.telegram_user_id, u.telegram_notify_login_codes, u.language
        FROM user_accounts a
        JOIN users u ON u.id = a.user_id
@@ -255,7 +262,7 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             }
           }
 
-          const canAutoConfirm =
+          let canAutoConfirm =
             (kind === 'trade' && Boolean(account.auto_confirm_trades)) ||
             (kind === 'login' && Boolean(account.auto_confirm_logins));
 
@@ -278,6 +285,17 @@ async function runCycle(app: FastifyInstance): Promise<void> {
 
             if (ageSec < delaySec) {
               continue;
+            }
+
+            if (kind === 'trade' && account.auto_confirm_trade_mode === 'incoming_only') {
+              canAutoConfirm = await isIncomingOnlyTradeOffer({
+                ma,
+                session: nextSession,
+                tradeOfferId: confirmation.creatorId
+              });
+              if (!canAutoConfirm) {
+                continue;
+              }
             }
 
             const response = await respondToConfirmationWithSessionRecovery({
@@ -310,8 +328,14 @@ async function runCycle(app: FastifyInstance): Promise<void> {
             );
 
             await execute(
-              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, ?, JSON_OBJECT('confirmationId', ?, 'action', 'auto_confirm'))",
-              [account.user_id, account.id, kind, confirmation.id]
+              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, ?, JSON_OBJECT('confirmationId', ?, 'action', 'auto_confirm', 'mode', ?))",
+              [
+                account.user_id,
+                account.id,
+                kind,
+                confirmation.id,
+                kind === 'trade' ? account.auto_confirm_trade_mode ?? 'all' : 'all'
+              ]
             );
 
             wsHub.sendToUser(Number(account.user_id), `${kind}:auto_confirmed`, {
@@ -326,11 +350,14 @@ async function runCycle(app: FastifyInstance): Promise<void> {
         await expireStalePendingByKind(account.id, 'other', [...byKind.other]);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        const sessionRecoveryFailure = isSteamSessionRecoveryFailure(error);
+        let shouldLogWarning = true;
 
-        if (errorMessage.toLowerCase().includes('steam session expired')) {
+        if (sessionRecoveryFailure) {
           const now = Date.now();
           const last = sessionExpiredNotifiedAt.get(Number(account.id)) ?? 0;
-          if (now - last > 15 * 60 * 1000) {
+          shouldLogWarning = now - last > 15 * 60 * 1000;
+          if (shouldLogWarning) {
             sessionExpiredNotifiedAt.set(Number(account.id), now);
             const payload = {
               accountId: account.id,
@@ -338,24 +365,28 @@ async function runCycle(app: FastifyInstance): Promise<void> {
               message: buildSessionExpiredMessage(automaticRecoveryAvailable, account.language)
             };
 
-            await createUserNotification(Number(account.user_id), 'steam_session_expired', payload);
+            await replaceSessionExpiredNotification(Number(account.user_id), payload);
 
-            await execute(
-              "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_expired'))",
-              [account.user_id, account.id]
-            );
+            if (!(await hasRecentSessionExpiredLog(Number(account.user_id), Number(account.id)))) {
+              await execute(
+                "INSERT INTO logs (user_id, account_id, type, details) VALUES (?, ?, 'system', JSON_OBJECT('event', 'session_expired'))",
+                [account.user_id, account.id]
+              );
+            }
           }
         }
 
-        app.log.warn(
-          {
-            accountId: account.id,
-            accountAlias: account.alias,
-            errorMessage,
-            errorStack: error instanceof Error ? error.stack : undefined
-          },
-          'Failed steam polling for account'
-        );
+        if (shouldLogWarning) {
+          app.log.warn(
+            {
+              accountId: account.id,
+              accountAlias: account.alias,
+              errorMessage,
+              errorStack: sessionRecoveryFailure ? undefined : error instanceof Error ? error.stack : undefined
+            },
+            'Failed steam polling for account'
+          );
+        }
       }
     }
   } finally {

@@ -163,6 +163,109 @@ function buildCookieHeader(session: SteamSessionState | null, steamid: string): 
   return parts.join('; ');
 }
 
+type TradeOfferSide = {
+  assets?: unknown[];
+};
+
+type TradeOfferStatus = {
+  me?: TradeOfferSide;
+  them?: TradeOfferSide;
+};
+
+/** Extract the page's JSON payload without evaluating any Steam page script. */
+export function extractTradeOfferStatus(html: string): TradeOfferStatus | null {
+  const match = /(?:var\s+)?g_rgCurrentTradeStatus\s*=\s*/.exec(html);
+  if (!match || match.index === undefined) {
+    return null;
+  }
+
+  const start = match.index + match[0].length;
+  if (html[start] !== '{') {
+    return null;
+  }
+
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = start; index < html.length; index += 1) {
+    const character = html[index];
+
+    if (quoted) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        quoted = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      quoted = true;
+      continue;
+    }
+    if (character === '{') {
+      depth += 1;
+      continue;
+    }
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(html.slice(start, index + 1));
+          return parsed && typeof parsed === 'object' ? (parsed as TradeOfferStatus) : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+export function isIncomingOnlyTradeStatus(status: TradeOfferStatus | null): boolean {
+  if (!status || !Array.isArray(status.me?.assets) || !Array.isArray(status.them?.assets)) {
+    return false;
+  }
+
+  return status.me.assets.length === 0 && status.them.assets.length > 0;
+}
+
+/**
+ * Fail closed: a trade is eligible only when the authenticated Steam offer page
+ * explicitly reports no outgoing assets and at least one incoming asset.
+ */
+export async function isIncomingOnlyTradeOffer(params: {
+  ma: MaFile;
+  session: SteamSessionState | null;
+  tradeOfferId: string | undefined;
+}): Promise<boolean> {
+  if (!params.tradeOfferId || !/^\d+$/.test(params.tradeOfferId)) {
+    return false;
+  }
+
+  try {
+    const steamid = resolveSteamId(params.ma, params.session);
+    const response = await axios.get<string>(
+      `https://steamcommunity.com/tradeoffer/${params.tradeOfferId}/?l=english`,
+      {
+        headers: { Cookie: buildCookieHeader(params.session, steamid) },
+        responseType: 'text',
+        timeout: 15000,
+        maxRedirects: 0,
+        validateStatus: (status) => status === 200
+      }
+    );
+
+    return isIncomingOnlyTradeStatus(extractTradeOfferStatus(response.data));
+  } catch {
+    return false;
+  }
+}
+
 function shouldAttemptSessionRefresh(ma: MaFile, session: SteamSessionState | null): boolean {
   const refreshToken = resolveRefreshToken(ma, session);
   if (!refreshToken) {

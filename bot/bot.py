@@ -151,7 +151,7 @@ async def start_with_param(message: Message) -> None:
 
 @dp.message(CommandStart())
 async def start_plain(message: Message) -> None:
-    await message.answer(tr(await get_user_language(message.from_user.id), 'bot_active'))
+    await message.answer(tr(await get_user_language(message.from_user.id), 'bot_ready'))
 
 
 @dp.message(Command('status'))

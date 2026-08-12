@@ -23,7 +23,20 @@ export default fp(async (app) => {
   });
 
   await app.register(helmet, {
-    contentSecurityPolicy: false
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        'default-src': ["'self'"],
+        'base-uri': ["'self'"],
+        'object-src': ["'none'"],
+        'frame-ancestors': ["'none'"],
+        'script-src': ["'self'", 'https://challenges.cloudflare.com'],
+        'style-src': ["'self'"],
+        'img-src': ["'self'", 'data:'],
+        'connect-src': ["'self'", 'https://challenges.cloudflare.com'],
+        'frame-src': ['https://challenges.cloudflare.com']
+      }
+    }
   });
 
   await app.register(cookie, {

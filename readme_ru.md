@@ -27,6 +27,8 @@ cp .env.example .env
 - сгенерируй сильные `JWT_SECRET`, `COOKIE_SECRET` и `ENCRYPTION_KEY`
 - задай пароли MySQL
 - при необходимости задай Telegram bot и Turnstile keys
+- если frontend/API отдаются с одного reverse-proxy origin, оставь `VITE_API_URL` и `VITE_WS_URL` пустыми
+- если Turnstile включен, задай `VITE_TURNSTILE_SITE_KEY` тем же значением, что и `TURNSTILE_SITE_KEY`
 
 Сгенерировать сильные secrets:
 
@@ -56,6 +58,24 @@ Production containers по умолчанию слушают только localh
 - `/` -> `http://127.0.0.1:3100`
 - `/api` -> `http://127.0.0.1:3101`
 - `/ws` -> `http://127.0.0.1:3101`
+
+Рекомендуемая форма production `.env` за reverse proxy:
+
+```env
+NODE_ENV=production
+APP_URL=https://steam.example.com
+API_URL=https://steam.example.com/api
+VITE_API_URL=
+VITE_WS_URL=
+FORCE_HTTPS=true
+```
+
+Явные frontend URL нужны только если браузер реально ходит на отдельный API/WS origin:
+
+```env
+VITE_API_URL=https://api.steam.example.com
+VITE_WS_URL=wss://api.steam.example.com/ws
+```
 
 ## Локальная разработка
 
@@ -157,13 +177,14 @@ make dev
 - `DB_*` - параметры MySQL и bootstrap пользователя.
 - `JWT_SECRET`, `COOKIE_SECRET`, `ENCRYPTION_KEY` - security secrets.
 - `APP_URL`, `API_URL` - browser/backend origins.
+- `VITE_API_URL`, `VITE_WS_URL` - опциональные build-time origins для frontend API/WebSocket. Для same-origin reverse proxy deploy оставляй пустыми.
 - `RATE_LIMIT_REDIS_URL`, `RATE_LIMIT_REDIS_PREFIX` - backend для общего rate limiting; Docker Compose по умолчанию использует внутренний Redis и prefix на основе `NODE_ENV`.
 - `FORCE_HTTPS` - включает HTTP->HTTPS redirect в production (`true` по умолчанию, можно отключить для специальных сценариев).
 - `OPENAPI_ENABLED` - управляет `/api-docs/openapi.json`; по умолчанию включен в dev/test и должен быть выключен в production, если не нужен явно.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` - настройки бота.
 - `STEAM_POLL_INTERVAL_SEC` - интервал auto-confirm polling.
 - `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` - опциональная защита регистрации через Cloudflare Turnstile.
-- `VITE_TURNSTILE_SITE_KEY` - публичный site key для frontend registration flow.
+- `VITE_TURNSTILE_SITE_KEY` - публичный site key для frontend registration flow. Должен совпадать с `TURNSTILE_SITE_KEY`.
 
 Перед production deploy сгенерируй сильные секреты, например:
 

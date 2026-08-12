@@ -1,4 +1,7 @@
 import axios from 'axios';
+import { lookup } from 'node:dns/promises';
+import https from 'node:https';
+import { isIP } from 'node:net';
 import { execute, queryRows } from '../db/pool';
 
 export const ALLOWED_WEBHOOK_EVENTS = ['trade', 'login', 'steam_session_expired'] as const;
@@ -118,7 +121,79 @@ export function buildDiscordWebhookBody(event: WebhookEventType | 'test', payloa
   };
 }
 
-function validateWebhookUrl(value: string): string {
+export function isForbiddenWebhookAddress(address: string): boolean {
+  const normalized = address.toLowerCase();
+  const version = isIP(normalized);
+
+  if (version === 4) {
+    const octets = normalized.split('.').map(Number);
+    const [first, second] = octets;
+    return (
+      first === 0
+      || first === 10
+      || first === 127
+      || first >= 224
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 192 && second === 0)
+      || (first === 192 && second === 2)
+      || (first === 198 && (second === 18 || second === 19 || second === 51))
+      || (first === 203 && second === 0)
+      || (first === 203 && second === 113)
+    );
+  }
+
+  if (version === 6) {
+    if (normalized === '::' || normalized === '::1' || normalized.startsWith('fe80:')) {
+      return true;
+    }
+
+    if (normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('2001:db8:')) {
+      return true;
+    }
+
+    const mappedV4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+    return Boolean(mappedV4 && isForbiddenWebhookAddress(mappedV4));
+  }
+
+  return true;
+}
+
+function isForbiddenWebhookHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, '');
+  return (
+    normalized === 'localhost'
+    || normalized.endsWith('.localhost')
+    || normalized.endsWith('.local')
+    || normalized.endsWith('.internal')
+  );
+}
+
+async function resolvePublicWebhookAddress(hostname: string): Promise<{ address: string; family: number }> {
+  if (isForbiddenWebhookHostname(hostname)) {
+    throw new Error('Webhook URL points to a forbidden host');
+  }
+
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (addresses.length === 0 || addresses.some(({ address }) => isForbiddenWebhookAddress(address))) {
+    throw new Error('Webhook URL must resolve only to public IP addresses');
+  }
+
+  return addresses[0];
+}
+
+// Resolve on every connection to prevent a hostname from rebinding to an internal IP after validation.
+const webhookHttpsAgent = new https.Agent({
+  lookup(hostname, _options, callback) {
+    void resolvePublicWebhookAddress(hostname)
+      .then(({ address, family }) => callback(null, address, family))
+      .catch((error) => callback(error as NodeJS.ErrnoException, '', 0));
+  }
+});
+
+export async function validateWebhookUrl(value: string): Promise<string> {
   const trimmed = value.trim();
   if (!trimmed) {
     throw new Error('Webhook URL is required');
@@ -131,9 +206,19 @@ function validateWebhookUrl(value: string): string {
     throw new Error('Webhook URL is invalid');
   }
 
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error('Webhook URL must start with http:// or https://');
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Webhook URL must use https://');
   }
+
+  if (parsed.port && parsed.port !== '443') {
+    throw new Error('Webhook URL must use the default HTTPS port');
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error('Webhook URL points to a forbidden host');
+  }
+
+  await resolvePublicWebhookAddress(parsed.hostname);
 
   return parsed.toString();
 }
@@ -184,7 +269,7 @@ export async function createUserWebhook(
   }
 
   const targetType = validateTargetType(String(input.targetType ?? ''));
-  const url = validateWebhookUrl(String(input.url ?? ''));
+  const url = await validateWebhookUrl(String(input.url ?? ''));
   const eventTypes = normalizeWebhookEventTypes(input.eventTypes);
   if (eventTypes.length === 0) {
     throw new Error('Select at least one webhook event');
@@ -247,6 +332,10 @@ async function deliverWebhook(hook: UserWebhook, eventType: WebhookEventType | '
   try {
     const response = await axios.post(hook.url, requestBody, {
       timeout: 10000,
+      maxRedirects: 0,
+      maxContentLength: 64 * 1024,
+      maxBodyLength: 64 * 1024,
+      httpsAgent: webhookHttpsAgent,
       headers: {
         'content-type': 'application/json'
       }

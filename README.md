@@ -27,6 +27,8 @@ Edit `.env` before starting:
 - generate strong `JWT_SECRET`, `COOKIE_SECRET`, and `ENCRYPTION_KEY`
 - set MySQL passwords
 - optionally set Telegram bot and Turnstile keys
+- when serving frontend/API from the same reverse-proxy origin, leave `VITE_API_URL` and `VITE_WS_URL` empty
+- if Turnstile is enabled, set `VITE_TURNSTILE_SITE_KEY` to the same value as `TURNSTILE_SITE_KEY`
 
 Generate strong secrets:
 
@@ -56,6 +58,24 @@ Put your external Nginx/Caddy/Traefik reverse proxy in front of these ports:
 - `/` -> `http://127.0.0.1:3100`
 - `/api` -> `http://127.0.0.1:3101`
 - `/ws` -> `http://127.0.0.1:3101`
+
+Recommended production `.env` shape behind a reverse proxy:
+
+```env
+NODE_ENV=production
+APP_URL=https://steam.example.com
+API_URL=https://steam.example.com/api
+VITE_API_URL=
+VITE_WS_URL=
+FORCE_HTTPS=true
+```
+
+Use explicit frontend URLs only when the browser really talks to a separate API/WS origin:
+
+```env
+VITE_API_URL=https://api.steam.example.com
+VITE_WS_URL=wss://api.steam.example.com/ws
+```
 
 ## Local development
 
@@ -157,13 +177,14 @@ Core variables:
 - `DB_*` MySQL connection and bootstrap user credentials.
 - `JWT_SECRET`, `COOKIE_SECRET`, `ENCRYPTION_KEY` security secrets.
 - `APP_URL`, `API_URL` browser/backend origins.
+- `VITE_API_URL`, `VITE_WS_URL` optional frontend build-time API/WebSocket origins. Leave empty for same-origin reverse proxy deploys.
 - `RATE_LIMIT_REDIS_URL`, `RATE_LIMIT_REDIS_PREFIX` shared rate limiting backend; Docker Compose defaults to internal Redis and a `NODE_ENV`-based prefix.
 - `FORCE_HTTPS` enables HTTP->HTTPS redirects in production (`true` by default, can be disabled for special deployments).
 - `OPENAPI_ENABLED` controls `/api-docs/openapi.json`; enabled by default in dev/test and should stay off in production unless explicitly needed.
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` bot settings.
 - `STEAM_POLL_INTERVAL_SEC` auto-confirm polling interval.
 - `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` optional Cloudflare Turnstile backend protection.
-- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow.
+- `VITE_TURNSTILE_SITE_KEY` frontend public site key for invisible Turnstile registration flow. It must equal `TURNSTILE_SITE_KEY`.
 
 Generate strong secrets before production deploy, for example:
 

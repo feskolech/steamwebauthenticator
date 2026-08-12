@@ -1,10 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { execute, queryRows } from '../db/pool';
 import { decryptForUser } from '../utils/crypto';
-import { decodeAccountSession } from '../utils/accountSession';
+import { decodeAccountSession, encodeAccountSession } from '../utils/accountSession';
 import { parseMaFile } from '../utils/mafile';
-import { generateSteamCode, respondToConfirmation } from '../services/steamService';
+import { generateSteamCode, respondToConfirmationWithSessionRecovery } from '../services/steamService';
 import { listAccountTagsByAccountIds } from '../services/accountOrganizationService';
+import { clearSessionExpiredNotifications } from '../services/sessionNotificationService';
 
 async function getAccountForUser(userId: number, accountId: number): Promise<any> {
   const rows = await queryRows<any[]>(
@@ -40,7 +41,7 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/user/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
       `SELECT a.id, a.alias, a.account_name, a.steamid, a.auto_confirm, a.auto_confirm_trades,
-              a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active,
+              a.auto_confirm_trade_mode, a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active,
               a.folder_id, f.name AS folder_name
        FROM user_accounts a
        LEFT JOIN account_folders f ON f.id = a.folder_id AND f.user_id = a.user_id
@@ -62,6 +63,7 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
         steamid: item.steamid,
         autoConfirm: Boolean(item.auto_confirm ?? item.auto_confirm_trades),
         autoConfirmTrades: Boolean(item.auto_confirm_trades ?? item.auto_confirm),
+        autoConfirmTradeMode: item.auto_confirm_trade_mode === 'incoming_only' ? 'incoming_only' : 'all',
         autoConfirmLogins: Boolean(item.auto_confirm_logins),
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
         folderId: item.folder_id,
@@ -117,7 +119,7 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
           return reply.code(400).send({ message: 'Missing nonce. Fetch trade queue first.' });
         }
 
-        const success = await respondToConfirmation({
+        const response = await respondToConfirmationWithSessionRecovery({
           ma,
           session,
           confirmationId,
@@ -125,7 +127,17 @@ const userApiRoutes: FastifyPluginAsync = async (app) => {
           accept: true
         });
 
-        if (!success) {
+        if (response.refreshed && response.session) {
+          await execute(
+            `INSERT INTO account_sessions (account_id, session_json)
+             VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE session_json = VALUES(session_json)`,
+            [accountId, encodeAccountSession(response.session, account.password_hash, request.user.id)]
+          );
+          await clearSessionExpiredNotifications(request.user.id, accountId);
+        }
+
+        if (!response.success) {
           return reply.code(400).send({ message: 'Confirmation failed' });
         }
 

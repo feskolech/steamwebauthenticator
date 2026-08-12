@@ -37,6 +37,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
+    allowedHosts: ['localhost', '127.0.0.1', 'frontend'],
     proxy: {
       '/api': {
         target: process.env.VITE_PROXY_TARGET || 'http://localhost:3001',

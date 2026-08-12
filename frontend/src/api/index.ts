@@ -101,7 +101,10 @@ export const accountApi = {
   update: (
     accountId: number,
     data: Partial<
-      Pick<Account, 'alias' | 'autoConfirm' | 'autoConfirmTrades' | 'autoConfirmLogins' | 'autoConfirmDelaySec'>
+      Pick<
+        Account,
+        'alias' | 'autoConfirm' | 'autoConfirmTrades' | 'autoConfirmTradeMode' | 'autoConfirmLogins' | 'autoConfirmDelaySec'
+      >
     >
   ) =>
     apiClient.patch<{ success: boolean }>(`/api/accounts/${accountId}`, data),

@@ -137,18 +137,27 @@ export function AccountDetailPage() {
             >
               {t('accountDetail.refreshConfirms')}
             </Button>
-            <Button
-              onClick={() => {
-                void (async () => {
-                  await accountApi.update(accountId, {
-                    autoConfirmTrades: !account.autoConfirmTrades
-                  });
-                  await load();
-                })();
-              }}
-            >
-              {t('accountDetail.autoConfirmTrades')}: {account.autoConfirmTrades ? t('common.on') : t('common.off')}
-            </Button>
+            <label className="text-sm">
+              <span className="sr-only">{t('accountDetail.autoConfirmTrades')}</span>
+              <select
+                className="input-base min-w-52"
+                value={account.autoConfirmTrades ? account.autoConfirmTradeMode : 'off'}
+                onChange={(event) => {
+                  const mode = event.target.value as 'off' | 'all' | 'incoming_only';
+                  void (async () => {
+                    await accountApi.update(accountId, {
+                      autoConfirmTrades: mode !== 'off',
+                      autoConfirmTradeMode: mode === 'incoming_only' ? 'incoming_only' : 'all'
+                    });
+                    await load();
+                  })();
+                }}
+              >
+                <option value="off">{t('accountDetail.tradeAutoConfirmOff')}</option>
+                <option value="all">{t('accountDetail.tradeAutoConfirmAll')}</option>
+                <option value="incoming_only">{t('accountDetail.tradeAutoConfirmIncomingOnly')}</option>
+              </select>
+            </label>
             <Button
               onClick={() => {
                 void (async () => {

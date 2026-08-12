@@ -22,6 +22,7 @@ export type Account = {
   source?: 'mafile' | 'credentials';
   autoConfirm?: boolean;
   autoConfirmTrades: boolean;
+  autoConfirmTradeMode: 'all' | 'incoming_only';
   autoConfirmLogins: boolean;
   autoConfirmDelaySec: number;
   lastCode: string | null;

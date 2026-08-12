@@ -112,6 +112,14 @@ export function AccountsPage() {
           next[item.accountId] = item.code;
         });
         setLiveCodes(next);
+        setCachedCodes((previous) => {
+          const merged = {
+            ...previous,
+            ...Object.fromEntries(Object.entries(next).map(([accountId, code]) => [String(accountId), code]))
+          };
+          localStorage.setItem(OFFLINE_CODES_KEY, JSON.stringify(merged));
+          return merged;
+        });
       } catch {
         // ignore temporary errors
       }

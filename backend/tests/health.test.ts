@@ -11,6 +11,8 @@ describe('GET /health', () => {
       status: 'ok',
       service: 'steamguard-web-api'
     });
+    expect(response.headers['content-security-policy']).toContain("default-src 'self'");
+    expect(response.headers['content-security-policy']).toContain('https://challenges.cloudflare.com');
 
     await app.close();
   });

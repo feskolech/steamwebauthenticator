@@ -26,6 +26,7 @@ type AccountRow = {
   source: 'mafile' | 'credentials';
   auto_confirm: number;
   auto_confirm_trades: number;
+  auto_confirm_trade_mode: 'all' | 'incoming_only';
   auto_confirm_logins: number;
   auto_confirm_delay_sec: number;
   last_code: string | null;
@@ -75,7 +76,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
   app.get('/api/accounts', { preHandler: app.authenticate }, async (request) => {
     const accounts = await queryRows<any[]>(
       `SELECT a.id, a.alias, a.account_name, a.steamid, a.source, a.auto_confirm, a.auto_confirm_trades,
-              a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active, a.created_at,
+              a.auto_confirm_trade_mode, a.auto_confirm_logins, a.auto_confirm_delay_sec, a.last_code, a.last_active, a.created_at,
               a.folder_id, f.name AS folder_name,
               IF(a.encrypted_revocation_code IS NULL, FALSE, TRUE) AS has_recovery_code
        FROM user_accounts a
@@ -99,6 +100,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
         source: item.source,
         autoConfirm: Boolean(item.auto_confirm ?? item.auto_confirm_trades),
         autoConfirmTrades: Boolean(item.auto_confirm_trades ?? item.auto_confirm),
+        autoConfirmTradeMode: item.auto_confirm_trade_mode === 'incoming_only' ? 'incoming_only' : 'all',
         autoConfirmLogins: Boolean(item.auto_confirm_logins),
         autoConfirmDelaySec: item.auto_confirm_delay_sec,
         lastCode: item.last_code,
@@ -160,6 +162,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
           source: account.source,
           autoConfirm: Boolean(account.auto_confirm ?? account.auto_confirm_trades),
           autoConfirmTrades: Boolean(account.auto_confirm_trades ?? account.auto_confirm),
+          autoConfirmTradeMode: account.auto_confirm_trade_mode === 'incoming_only' ? 'incoming_only' : 'all',
           autoConfirmLogins: Boolean(account.auto_confirm_logins),
           autoConfirmDelaySec: account.auto_confirm_delay_sec,
           lastCode: account.last_code,
@@ -435,6 +438,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
       alias?: string;
       autoConfirm?: boolean;
       autoConfirmTrades?: boolean;
+      autoConfirmTradeMode?: 'all' | 'incoming_only';
       autoConfirmLogins?: boolean;
       autoConfirmDelaySec?: number;
     };
@@ -464,6 +468,14 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     if (typeof request.body.autoConfirmTrades === 'boolean') {
       updates.push('auto_confirm_trades = ?');
       values.push(request.body.autoConfirmTrades ? 1 : 0);
+    }
+
+    if (request.body.autoConfirmTradeMode !== undefined) {
+      if (!['all', 'incoming_only'].includes(request.body.autoConfirmTradeMode)) {
+        return reply.code(400).send({ message: 'Invalid trade auto-confirm mode' });
+      }
+      updates.push('auto_confirm_trade_mode = ?');
+      values.push(request.body.autoConfirmTradeMode);
     }
 
     if (typeof request.body.autoConfirmLogins === 'boolean') {
