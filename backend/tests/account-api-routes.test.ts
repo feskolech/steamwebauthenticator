@@ -43,7 +43,8 @@ import { respondToConfirmationWithSessionRecovery } from '../src/services/steamS
 
 const USER_ID = 7;
 const PASSWORD_HASH = '$2a$10$123456789012345678901u4u56DxsYjQbTkM1Y5AcQq5VULh1l9Km';
-const SHARED_SECRET = 'Z9EP1Aw3Cby0FssEl2+hU2yetyI=';
+const SHARED_SECRET = Buffer.from('steamguard-test-shared-secret').toString('base64');
+const IDENTITY_SECRET = Buffer.from('steamguard-test-identity-secret').toString('base64');
 const respondToConfirmationMock =
   respondToConfirmationWithSessionRecovery as jest.MockedFunction<typeof respondToConfirmationWithSessionRecovery>;
 
@@ -90,7 +91,7 @@ function encryptedMa(accountName = 'main'): string {
     JSON.stringify({
       account_name: accountName,
       shared_secret: SHARED_SECRET,
-      identity_secret: 'Ckykb8vAApDbTW9pZXuLfqK/7Y0=',
+      identity_secret: IDENTITY_SECRET,
       steamid: '76561198000000001'
     }),
     PASSWORD_HASH,
@@ -229,7 +230,7 @@ describe('account and bot API routes', () => {
         ma: {
           account_name: 'imported',
           shared_secret: SHARED_SECRET,
-          identity_secret: 'Ckykb8vAApDbTW9pZXuLfqK/7Y0=',
+          identity_secret: IDENTITY_SECRET,
           Revocation_code: 'R12345',
           Session: {
             SteamID: '76561198000000002',
@@ -517,7 +518,7 @@ describe('account and bot API routes', () => {
     expect(JSON.parse(response.body)).toMatchObject({
       account_name: 'main',
       shared_secret: SHARED_SECRET,
-      identity_secret: 'Ckykb8vAApDbTW9pZXuLfqK/7Y0='
+      identity_secret: IDENTITY_SECRET
     });
 
     await app.close();

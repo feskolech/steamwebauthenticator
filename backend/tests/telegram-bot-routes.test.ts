@@ -40,7 +40,8 @@ import { wsHub } from '../src/services/wsHub';
 
 const USER_ID = 7;
 const PASSWORD_HASH = '$2a$10$123456789012345678901u4u56DxsYjQbTkM1Y5AcQq5VULh1l9Km';
-const SHARED_SECRET = 'Z9EP1Aw3Cby0FssEl2+hU2yetyI=';
+const SHARED_SECRET = Buffer.from('steamguard-test-shared-secret').toString('base64');
+const IDENTITY_SECRET = Buffer.from('steamguard-test-identity-secret').toString('base64');
 
 const queryRowsMock = queryRows as jest.MockedFunction<typeof queryRows>;
 const executeMock = execute as jest.MockedFunction<typeof execute>;
@@ -58,7 +59,7 @@ function encryptedMa(): string {
     JSON.stringify({
       account_name: 'main',
       shared_secret: SHARED_SECRET,
-      identity_secret: 'Ckykb8vAApDbTW9pZXuLfqK/7Y0=',
+      identity_secret: IDENTITY_SECRET,
       steamid: '76561198000000001'
     }),
     PASSWORD_HASH,
